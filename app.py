@@ -185,6 +185,64 @@ if st.session_state.delete_mode and st.session_state.classes:
             st.success("Class deleted successfully!")
             st.rerun()
 elif option == "Upload a Timetable file":
-    st.info("Timetable file uploade will be done later")
+    st.subheader("Upload Your Timetable")
+    uploaded_file = st.file_uploader(
+        "choose a CSV file",
+        type=["csv"]
+    )
+    if uploaded_file is not None:
+        file_content = uploaded_file.getvalue().decode("utf-8")
+        reader = csv.DictReader(io.StringIO(file_content))
+        required_columns = [
+            "Subject",
+            "Day",
+            "Start Time",
+            "End Time",
+            "Teacher",
+            "Room",
+        ]
+        if not all(column in reader.fieldnames for column in required_columns):
+            st.error(
+                "Invalid CSV file. Please make sure it contains: "
+                "Subject, Day, Start Time, End Time, Teacher, Room"
+            )
+        else:
+            uploaded_classes = []
+            for row in reader:
+                try:
+                    start_time = datetime.strptime(
+                        row["Start Time"].strip(),
+                        "%H:%M"    
+                    ).time()
+                    end_time = datetime.strptime(
+                        row["End Time"].strip(),
+                        "%H:%M"
+                    ).time()
+                    uploaded_classes.append({
+                        "subject": row["Subject"].strip(),
+                        "Day": row["Day"].strip(),
+                        "Start Time":start_time,
+                        "End Time": end_time,
+                        "Teacher": row["Teacher"].strip(),
+                        "Room": row["Room"].strip()
+                    })
+                except ValueError:
+                    st.error(
+                        "Invalid time format. Please use HH:MM, "
+                        "for example 10:00 or 15:30."
+                    )
+                    uploaded_classes = []
+                    break
+                if uploaded_classes:
+                    st.write("Preview")
+                    st.dataframe(
+                        uploaded_classes,
+                        use_container_width=True
+                    )
+                    st.session_state.classes.extend(uploaded_classes)
+                    st.success(
+                        f"{len(uploaded_classes)} classes(es) imported successfully!"
+                    )
+                    st.rerun()
 elif option == 'Imort from Google Calendar':
     st.info("Google Calendar integration will be added next.")
