@@ -56,6 +56,37 @@ if st.session_state.classes:
         st.session_state.classes,
         use_container_width=True
     )
+    # Day-wise timetable view
+if st.session_state.classes:
+
+    st.subheader("Daily Timetable")
+
+    selected_day = st.selectbox(
+        "Select a day",
+        [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday"
+        ]
+    )
+
+    day_classes = [
+        class_item
+        for class_item in st.session_state.classes
+        if class_item["Day"] == selected_day
+    ]
+
+    if day_classes:
+        st.dataframe(
+            day_classes,
+            use_container_width=True
+        )
+    else:
+        st.info(f"No classes scheduled for {selected_day}.")
     # Edit classes
 if "edit_mode" not in st.session_state:
     st.session_state.edit_mode = False
