@@ -1,5 +1,9 @@
 
 import streamlit as st
+import csv
+import io
+from datetime import datetime
+from google_calendar import get_calendar_events
 st.title("Smart Timetable Assistant")
 if "classes" not in st.session_state:
     st.session_state.classes = []
@@ -10,7 +14,7 @@ option = st.selectbox(
     [
     "Enter manually",
     "Upload a Timetable file",
-    "Import from Google Calender"
+    "Import from Google Calendar"
     ]
 )
 if option == "Enter manually":
@@ -275,5 +279,21 @@ elif option == "Upload a Timetable file":
                         f"{len(uploaded_classes)} classes(es) imported successfully!"
                     )
                     st.rerun()
-elif option == 'Imort from Google Calendar':
-    st.info("Google Calendar integration will be added next.")
+elif option == "Import from Google Calendar":
+    st.subheader("Import from Google Calendar")
+
+    if st.button("Connect Google Calendar"):
+        try:
+            imported_classes = get_calendar_events()
+
+            if imported_classes:
+                st.session_state.classes.extend(imported_classes)
+                st.success(
+                    f"{len(imported_classes)} event(s) imported successfully!"
+                )
+                st.rerun()
+            else:
+                st.info("No timed events found in your Google Calendar.")
+
+        except Exception as e:
+            st.error(f"Could not connect to Google Calendar: {e}")
