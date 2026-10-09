@@ -7,7 +7,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
 def get_calendar_service():
@@ -91,3 +91,36 @@ def get_calendar_events():
         })
 
     return timetable_classes
+
+def create_calendar_event(subject, event_date, start_time, end_time):
+        """Create an event in the user's primary Google Calendar."""
+
+        service = get_calendar_service()
+
+    # Combine the selected date and times into full date-time values
+        start_datetime = datetime.combine(
+            event_date, start_time
+        ).astimezone()
+
+        end_datetime = datetime.combine(
+            event_date, end_time
+        ).astimezone()
+
+    # Prepare the event details for Google's API
+        event_body = {
+            "summary": subject,
+            "start": {
+                "dateTime": start_datetime.isoformat()
+            },
+            "end": {
+                "dateTime": end_datetime.isoformat()
+            }
+        }
+
+    # Send the event to Google Calendar
+        created_event = service.events().insert(
+            calendarId="primary",
+            body=event_body
+        ).execute()
+
+        return created_event
