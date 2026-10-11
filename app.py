@@ -1,10 +1,73 @@
 
 import streamlit as st
+from app_auth import sign_up, sign_in, sign_out, get_current_user
 import csv
 import io
 from datetime import datetime
-from google_calendar import get_calendar_events, create_calendar_event
+from google_calendar_web import (
+    get_calendar_events,
+    create_calendar_event,
+    start_google_oauth,
+    handle_google_oauth_callback,
+)
+# ---------- USER AUTHENTICATION ----------
+
 st.title("Smart Timetable Assistant")
+
+current_user = get_current_user()
+
+if not current_user:
+    st.subheader("Sign in or create an account")
+
+    login_tab, signup_tab = st.tabs(["Sign In", "Sign Up"])
+
+    with login_tab:
+        with st.form("login_form"):
+            login_email = st.text_input("Email address", key="login_email")
+            login_password = st.text_input(
+                "Password", type="password", key="login_password"
+            )
+            login_submitted = st.form_submit_button("Sign In")
+
+        if login_submitted:
+            try:
+                response = sign_in(login_email.strip(), login_password)
+                if response.user:
+                    st.success("Signed in successfully!")
+                    st.rerun()
+                else:
+                    st.error("Sign-in failed. Please check your credentials.")
+            except Exception:
+                st.error("Sign-in failed. Check your email and password.")
+
+    with signup_tab:
+        with st.form("signup_form"):
+            signup_email = st.text_input("Email address", key="signup_email")
+            signup_password = st.text_input(
+                "Create password", type="password", key="signup_password"
+            )
+            signup_submitted = st.form_submit_button("Create Account")
+
+        if signup_submitted:
+            try:
+                response = sign_up(
+                    signup_email.strip(), signup_password
+                )
+                if response.user:
+                    if response.session:
+                        st.success("Account created and signed in!")
+                        st.rerun()
+                    else:
+                        st.success(
+                            "Account created. Check your email to confirm "
+                            "your account, then sign in."
+                        )
+            except Exception as e:
+                st.error(f"Account creation failed: {e}")
+
+    st.stop()
+
+# ---------- END USER AUTHENTICATION ----------
 if "classes" not in st.session_state:
     st.session_state.classes = []
 st.write("Organize your classes, assignments, exams, and study times in one place.")
@@ -317,21 +380,8 @@ elif option == "Upload a Timetable file":
 elif option == "Import from Google Calendar":
     st.subheader("Import from Google Calendar")
 
-    if st.button("Connect Google Calendar"):
-        try:
-            imported_classes = get_calendar_events()
-
-            if imported_classes:
-                st.session_state.classes.extend(imported_classes)
-                st.success(
-                    f"{len(imported_classes)} event(s) imported successfully!"
-                )
-                st.rerun()
-            else:
-                st.info("No timed events found in your Google Calendar.")
-
-        except Exception as e:
-            st.error(f"Could not connect to Google Calendar: {e}")
+if st.button("Connect Google Calendar", key="connect_google_calendar"):
+    start_google_oauth()
 
 st.divider()
 st.subheader("Create Google Calendar Event")
@@ -349,7 +399,6 @@ with st.form("create_google_event_form"):
         format="12h",
         key="google_event_end"
     )
-
     create_submitted = st.form_submit_button("Create Event")
 
 if create_submitted:
@@ -372,18 +421,17 @@ if create_submitted:
         except Exception as e:
             st.error(f"Could not create the event: {e}")
 
-    if st.button("Connect Google Calendar"):
-        try:
-            imported_classes = get_calendar_events()
-
-            if imported_classes:
-                st.session_state.classes.extend(imported_classes)
-                st.success(
-                    f"{len(imported_classes)} event(s) imported successfully!"
-                )
-                st.rerun()
-            else:
-                st.info("No timed events found in your Google Calendar.")
-
-        except Exception as e:
-            st.error(f"Could not connect to Google Calendar: {e}")
+st.divider()
+if st.button("Import Google Calendar Events", key="import_google_events"):
+    try:
+        imported_classes = get_calendar_events()
+        if imported_classes:
+            st.session_state.classes.extend(imported_classes)
+            st.success(
+                f"{len(imported_classes)} event(s) imported successfully!"
+            )
+            st.rerun()
+        else:
+            st.info("No timed events found in your Google Calendar.")
+    except Exception as e:
+        st.error(f"Could not import Google Calendar events: {e}")
