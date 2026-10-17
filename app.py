@@ -16,6 +16,9 @@ st.title("Smart Timetable Assistant")
 
 current_user = get_current_user()
 
+if current_user:
+    handle_google_oauth_callback()
+    
 if not current_user:
     st.subheader("Sign in or create an account")
 
@@ -419,7 +422,9 @@ if create_submitted:
                 f"{created_event.get('summary', event_subject)}"
             )
         except Exception as e:
+            import traceback
             st.error(f"Could not create the event: {e}")
+            st.code(traceback.format_exc())
 
 st.divider()
 if st.button("Import Google Calendar Events", key="import_google_events"):
