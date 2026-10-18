@@ -196,7 +196,7 @@ def handle_google_oauth_callback():
         return True
 
     except Exception as e:
-        error_type = type(e)._name_
+        error_type = type(e).__name__
 
         # Show only the exception type, not its message,
         # because provider messages may contain sensitive details.
