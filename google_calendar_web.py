@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 from cryptography.fernet import Fernet
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -15,6 +16,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.events"
 ]
 
+REDIRECT_URI = (
+    "https://smart-timetable-assistant-phystar.streamlit.app/"
+)
+
 
 def _fernet():
     """Return the encryption helper for stored Google tokens."""
@@ -23,9 +28,17 @@ def _fernet():
     )
 
 
+def _state_serializer():
+    """Create a signed serializer for OAuth state."""
+    return URLSafeTimedSerializer(
+        st.secrets["TOKEN_ENCRYPTION_KEY"],
+        salt="google-oauth-state",
+    )
+
+
 def _redirect_uri():
     """Return the registered Google OAuth redirect URI."""
-    return "https://smart-timetable-assistant-phystar.streamlit.app/"
+    return REDIRECT_URI
 
 
 def _new_flow(state=None):
@@ -56,56 +69,90 @@ def start_google_oauth():
         st.error("Please sign in to your app first.")
         return
 
-    flow = _new_flow()
+    try:
+        # The signed state is independently verifiable after
+        # Google redirects back to the app.
+        state = _state_serializer().dumps({
+            "user_id": str(user.id),
+        })
 
-    authorization_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-        include_granted_scopes="true",
-    )
+        flow = _new_flow(state=state)
 
-    st.session_state["google_oauth_state"] = state
+        authorization_url, _ = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+        )
 
-    st.link_button(
-        "Continue to Google",
-        authorization_url,
-    )
+        st.link_button(
+            "Continue to Google",
+            authorization_url,
+        )
+
+    except Exception:
+        st.error(
+            "Could not start Google Calendar authorization. "
+            "Please check the app configuration."
+        )
 
 
 def handle_google_oauth_callback():
-    """Process Google's redirect after authorization."""
+    """Process Google's redirect and verify the signed state."""
     code = st.query_params.get("code")
     returned_state = st.query_params.get("state")
+    oauth_error = st.query_params.get("error")
+
+    if oauth_error:
+        st.query_params.clear()
+        st.error(
+            "Google Calendar authorization was cancelled or denied. "
+            "Please try again if you want to connect your calendar."
+        )
+        return True
 
     if not code:
         return False
 
     user = get_current_user()
-    expected_state = st.session_state.get("google_oauth_state")
 
     if not user:
-        st.error(
-            "Please sign in again, then connect Google Calendar."
-        )
         st.query_params.clear()
+        st.error(
+            "Your app session has expired. Please sign in again "
+            "and reconnect Google Calendar."
+        )
         return True
 
-    if (
-        not expected_state
-        or returned_state != expected_state
-    ):
-        st.error(
-            "Authorization verification failed. "
-            "Please try connecting Google Calendar again."
-        )
-        st.session_state.pop("google_oauth_state", None)
+    if not returned_state:
         st.query_params.clear()
+        st.error(
+            "Google authorization state is missing. "
+            "Please try connecting again."
+        )
         return True
 
     try:
-        flow = _new_flow(state=expected_state)
+        state_data = _state_serializer().loads(
+            returned_state,
+            max_age=600,
+        )
+
+        if state_data.get("user_id") != str(user.id):
+            st.query_params.clear()
+            st.error(
+                "Authorization verification failed. "
+                "Please sign in to the correct account and try again."
+            )
+            return True
+
+        flow = _new_flow(state=returned_state)
         flow.fetch_token(code=code)
         credentials = flow.credentials
+
+        if not credentials.token:
+            raise RuntimeError(
+                "Google did not return an access token."
+            )
 
         encrypted_token = _fernet().encrypt(
             credentials.to_json().encode()
@@ -125,24 +172,36 @@ def handle_google_oauth_callback():
 
         if response is None:
             raise RuntimeError(
-                "Supabase returned no response while saving "
-                "the Google Calendar token."
+                "Supabase returned no response while saving the token."
             )
 
-        st.session_state.pop("google_oauth_state", None)
         st.query_params.clear()
-
         st.success("Google Calendar connected successfully!")
         return True
 
+    except SignatureExpired:
+        st.query_params.clear()
+        st.error(
+            "Google authorization took too long and expired. "
+            "Please click Connect Google Calendar and try again."
+        )
+        return True
+
+    except BadSignature:
+        st.query_params.clear()
+        st.error(
+            "Authorization verification failed. "
+            "Please start a new Google Calendar connection."
+        )
+        return True
+
     except Exception:
-        # Avoid displaying authorization codes or sensitive
-        # provider responses to the user.
+        # Do not display OAuth codes, tokens, or provider responses.
+        st.query_params.clear()
         st.error(
             "Google Calendar connection failed. "
             "Check the app logs and OAuth settings, then try again."
         )
-        st.query_params.clear()
         return True
 
 
@@ -174,7 +233,7 @@ def get_calendar_service():
     if not records:
         raise RuntimeError(
             "No Google Calendar token was found for this account. "
-            "Click Connect Google Calendar and authorize access first."
+            "Connect Google Calendar and authorize access first."
         )
 
     encrypted_token = records[0].get("encrypted_token")
@@ -238,7 +297,7 @@ def get_calendar_service():
 
 
 def get_calendar_events():
-    """Fetch upcoming timed Google Calendar events."""
+    """Fetch upcoming timed events from Google Calendar."""
     service = get_calendar_service()
 
     now = datetime.now().astimezone()
