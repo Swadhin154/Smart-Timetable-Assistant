@@ -195,14 +195,19 @@ def handle_google_oauth_callback():
         )
         return True
 
-    except Exception:
-        # Do not display OAuth codes, tokens, or provider responses.
-        st.query_params.clear()
+    except Exception as e:
+        error_type = type(e)._name_
+
+        # Show only the exception type, not its message,
+        # because provider messages may contain sensitive details.
         st.error(
-            "Google Calendar connection failed. "
-            "Check the app logs and OAuth settings, then try again."
-        )
-        return True
+            f"Google Calendar connection failed. "
+            f"Error type: {error_type}. "
+            "Please share this error type for troubleshooting."
+    )
+
+    st.query_params.clear()
+    return True
 
 
 def get_calendar_service():
