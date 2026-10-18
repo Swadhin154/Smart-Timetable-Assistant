@@ -12,9 +12,7 @@ from googleapiclient.discovery import build
 from app_auth import get_current_user, get_supabase_client
 
 
-SCOPES = [
-    "https://www.googleapis.com/auth/calendar.events"
-]
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 REDIRECT_URI = (
     "https://smart-timetable-assistant-phystar.streamlit.app/"
@@ -23,9 +21,7 @@ REDIRECT_URI = (
 
 def _fernet():
     """Return the encryption helper for stored Google tokens."""
-    return Fernet(
-        st.secrets["TOKEN_ENCRYPTION_KEY"].encode()
-    )
+    return Fernet(st.secrets["TOKEN_ENCRYPTION_KEY"].encode())
 
 
 def _state_serializer():
@@ -37,12 +33,12 @@ def _state_serializer():
 
 
 def _redirect_uri():
-    """Return the registered Google OAuth redirect URI."""
+    """Return the exact registered Google OAuth redirect URI."""
     return REDIRECT_URI
 
 
 def _new_flow(state=None):
-    """Create the Google OAuth flow."""
+    """Create the Google OAuth flow using the configured Web client."""
     client_config = {
         "web": {
             "client_id": st.secrets["GOOGLE_WEB_CLIENT_ID"],
@@ -62,7 +58,7 @@ def _new_flow(state=None):
 
 
 def start_google_oauth():
-    """Start Google Calendar authorization."""
+    """Start Google Calendar authorization for the signed-in user."""
     user = get_current_user()
 
     if not user:
@@ -70,11 +66,9 @@ def start_google_oauth():
         return
 
     try:
-        # The signed state is independently verifiable after
-        # Google redirects back to the app.
-        state = _state_serializer().dumps({
-            "user_id": str(user.id),
-        })
+        state = _state_serializer().dumps(
+            {"user_id": str(user.id)}
+        )
 
         flow = _new_flow(state=state)
 
@@ -89,15 +83,18 @@ def start_google_oauth():
             authorization_url,
         )
 
-    except Exception:
+    except Exception as exc:
+        # Do not display exception messages that could contain
+        # sensitive configuration or request details.
         st.error(
             "Could not start Google Calendar authorization. "
-            "Please check the app configuration."
+            f"Error type: {type(exc)._name_}. "
+            "Check the deployed app configuration and logs."
         )
 
 
 def handle_google_oauth_callback():
-    """Process Google's redirect and verify the signed state."""
+    """Verify Google's callback, exchange the code, and save the token."""
     code = st.query_params.get("code")
     returned_state = st.query_params.get("state")
     oauth_error = st.query_params.get("error")
@@ -106,7 +103,7 @@ def handle_google_oauth_callback():
         st.query_params.clear()
         st.error(
             "Google Calendar authorization was cancelled or denied. "
-            "Please try again if you want to connect your calendar."
+            "Please try connecting again if you want to continue."
         )
         return True
 
@@ -127,7 +124,7 @@ def handle_google_oauth_callback():
         st.query_params.clear()
         st.error(
             "Google authorization state is missing. "
-            "Please try connecting again."
+            "Please start a new connection."
         )
         return True
 
@@ -145,6 +142,8 @@ def handle_google_oauth_callback():
             )
             return True
 
+        # Exchange the authorization code exactly as received.
+        # Do not manually modify or reuse the code.
         flow = _new_flow(state=returned_state)
         flow.fetch_token(code=code)
         credentials = flow.credentials
@@ -154,19 +153,22 @@ def handle_google_oauth_callback():
                 "Google did not return an access token."
             )
 
+        # Store the token encrypted, never in plaintext.
         encrypted_token = _fernet().encrypt(
-            credentials.to_json().encode()
-        ).decode()
+            credentials.to_json().encode("utf-8")
+        ).decode("utf-8")
 
         client = get_supabase_client()
 
         response = (
             client.table("google_calendar_tokens")
-            .upsert({
-                "user_id": str(user.id),
-                "encrypted_token": encrypted_token,
-                "updated_at": datetime.now().astimezone().isoformat(),
-            })
+            .upsert(
+                {
+                    "user_id": str(user.id),
+                    "encrypted_token": encrypted_token,
+                    "updated_at": datetime.now().astimezone().isoformat(),
+                }
+            )
             .execute()
         )
 
@@ -175,6 +177,7 @@ def handle_google_oauth_callback():
                 "Supabase returned no response while saving the token."
             )
 
+        # Remove the one-time authorization code from the URL.
         st.query_params.clear()
         st.success("Google Calendar connected successfully!")
         return True
@@ -182,8 +185,8 @@ def handle_google_oauth_callback():
     except SignatureExpired:
         st.query_params.clear()
         st.error(
-            "Google authorization took too long and expired. "
-            "Please click Connect Google Calendar and try again."
+            "Google authorization expired. Please start a new "
+            "Google Calendar connection."
         )
         return True
 
@@ -195,23 +198,45 @@ def handle_google_oauth_callback():
         )
         return True
 
-    except Exception as e:
-        error_type = type(e).__name__
+    except Exception as exc:
+        error_type = type(exc)._name_
 
-        # Show only the exception type, not its message,
-        # because provider messages may contain sensitive details.
+        # Show only safe, structured OAuth diagnostics.
+        # Never display the authorization code, request URL,
+        # client secret, access token, or refresh token.
+        error_code = getattr(exc, "error", None)
+        error_description = getattr(exc, "description", None)
+
+        st.query_params.clear()
+
         st.error(
-            f"Google Calendar connection failed. "
-            f"Error type: {error_type}. "
-            "Please share this error type for troubleshooting."
-    )
+            "Google Calendar connection failed. "
+            f"Error type: {error_type}."
+        )
 
-    st.query_params.clear()
-    return True
+        if error_code and isinstance(error_code, str):
+            st.write("OAuth error code:", error_code[:100])
+
+        if error_description and isinstance(error_description, str):
+            # Avoid rendering a long or unexpected provider message.
+            st.write(
+                "OAuth error description:",
+                error_description[:200],
+            )
+
+        if error_type == "InvalidGrantError":
+            st.info(
+                "Google rejected the authorization-code exchange. "
+                "Start a fresh connection and approve access once. "
+                "If it fails again, verify the Web client credentials "
+                "and the exact redirect URI used for both steps."
+            )
+
+        return True
 
 
 def get_calendar_service():
-    """Load the current user's Google Calendar credentials."""
+    """Load and validate the signed-in user's Google credentials."""
     user = get_current_user()
 
     if not user:
@@ -229,8 +254,7 @@ def get_calendar_service():
 
     if response is None:
         raise RuntimeError(
-            "Supabase returned no response when looking up "
-            "the Google Calendar token."
+            "Supabase returned no response while looking up the token."
         )
 
     records = response.data
@@ -250,8 +274,8 @@ def get_calendar_service():
         )
 
     token_json = _fernet().decrypt(
-        encrypted_token.encode()
-    ).decode()
+        encrypted_token.encode("utf-8")
+    ).decode("utf-8")
 
     credentials = Credentials.from_authorized_user_info(
         json.loads(token_json),
@@ -261,30 +285,32 @@ def get_calendar_service():
     if credentials.expired:
         if not credentials.refresh_token:
             raise RuntimeError(
-                "Google authorization has expired. "
-                "Please reconnect Google Calendar."
+                "Google authorization has expired and no refresh token "
+                "is available. Please reconnect Google Calendar."
             )
 
         credentials.refresh(Request())
 
         updated_encrypted_token = _fernet().encrypt(
-            credentials.to_json().encode()
-        ).decode()
+            credentials.to_json().encode("utf-8")
+        ).decode("utf-8")
 
         update_response = (
             client.table("google_calendar_tokens")
-            .upsert({
-                "user_id": str(user.id),
-                "encrypted_token": updated_encrypted_token,
-                "updated_at": datetime.now().astimezone().isoformat(),
-            })
+            .upsert(
+                {
+                    "user_id": str(user.id),
+                    "encrypted_token": updated_encrypted_token,
+                    "updated_at": datetime.now().astimezone().isoformat(),
+                }
+            )
             .execute()
         )
 
         if update_response is None:
             raise RuntimeError(
-                "Google credentials were refreshed, but Supabase "
-                "returned no response while saving the updated token."
+                "Credentials were refreshed, but Supabase returned "
+                "no response while saving the updated token."
             )
 
     if not credentials.valid:
@@ -302,19 +328,23 @@ def get_calendar_service():
 
 
 def get_calendar_events():
-    """Fetch upcoming timed events from Google Calendar."""
+    """Fetch upcoming timed events from the primary Google Calendar."""
     service = get_calendar_service()
 
     now = datetime.now().astimezone()
     end_date = now + timedelta(days=90)
 
-    response = service.events().list(
-        calendarId="primary",
-        timeMin=now.isoformat(),
-        timeMax=end_date.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
+    response = (
+        service.events()
+        .list(
+            calendarId="primary",
+            timeMin=now.isoformat(),
+            timeMax=end_date.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
 
     classes = []
 
@@ -322,26 +352,27 @@ def get_calendar_events():
         start = event.get("start", {})
         end = event.get("end", {})
 
-        # Skip all-day events because the timetable uses times.
+        # Skip all-day events because this timetable uses times.
         if "dateTime" not in start or "dateTime" not in end:
             continue
 
         start_dt = datetime.fromisoformat(
             start["dateTime"].replace("Z", "+00:00")
         )
-
         end_dt = datetime.fromisoformat(
             end["dateTime"].replace("Z", "+00:00")
         )
 
-        classes.append({
-            "subject": event.get("summary", "Untitled"),
-            "Day": start_dt.strftime("%A"),
-            "Start Time": start_dt.time(),
-            "End Time": end_dt.time(),
-            "Teacher": "",
-            "Room": "",
-        })
+        classes.append(
+            {
+                "subject": event.get("summary", "Untitled"),
+                "Day": start_dt.strftime("%A"),
+                "Start Time": start_dt.time(),
+                "End Time": end_dt.time(),
+                "Teacher": "",
+                "Room": "",
+            }
+        )
 
     return classes
 
@@ -352,14 +383,12 @@ def create_calendar_event(
     start_time,
     end_time,
 ):
-    """Create an event in the current user's primary calendar."""
+    """Create an event in the signed-in user's primary calendar."""
     if not subject or not subject.strip():
         raise ValueError("Please enter an event title.")
 
     if end_time <= start_time:
-        raise ValueError(
-            "End time must be later than start time."
-        )
+        raise ValueError("End time must be later than start time.")
 
     service = get_calendar_service()
 
@@ -375,15 +404,15 @@ def create_calendar_event(
 
     event_body = {
         "summary": subject.strip(),
-        "start": {
-            "dateTime": start_dt.isoformat(),
-        },
-        "end": {
-            "dateTime": end_dt.isoformat(),
-        },
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": end_dt.isoformat()},
     }
 
-    return service.events().insert(
-        calendarId="primary",
-        body=event_body,
-    ).execute()
+    return (
+        service.events()
+        .insert(
+            calendarId="primary",
+            body=event_body,
+        )
+        .execute()
+    )
