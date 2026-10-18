@@ -84,12 +84,10 @@ def start_google_oauth():
         )
 
     except Exception as exc:
-        # Do not display exception messages that could contain
-        # sensitive configuration or request details.
         st.error(
             "Could not start Google Calendar authorization. "
             f"Error type: {type(exc)._name_}. "
-            "Check the deployed app configuration and logs."
+            "Check the app configuration and deployment logs."
         )
 
 
@@ -142,8 +140,7 @@ def handle_google_oauth_callback():
             )
             return True
 
-        # Exchange the authorization code exactly as received.
-        # Do not manually modify or reuse the code.
+        # Exchange the one-time authorization code.
         flow = _new_flow(state=returned_state)
         flow.fetch_token(code=code)
         credentials = flow.credentials
@@ -153,7 +150,7 @@ def handle_google_oauth_callback():
                 "Google did not return an access token."
             )
 
-        # Store the token encrypted, never in plaintext.
+        # Encrypt the token before storing it.
         encrypted_token = _fernet().encrypt(
             credentials.to_json().encode("utf-8")
         ).decode("utf-8")
@@ -177,7 +174,6 @@ def handle_google_oauth_callback():
                 "Supabase returned no response while saving the token."
             )
 
-        # Remove the one-time authorization code from the URL.
         st.query_params.clear()
         st.success("Google Calendar connected successfully!")
         return True
@@ -199,14 +195,12 @@ def handle_google_oauth_callback():
         return True
 
     except Exception as exc:
-        error_type = type(exc)._name_
-
-        # Show only safe, structured OAuth diagnostics.
-        # Never display the authorization code, request URL,
-        # client secret, access token, or refresh token.
+        error_type = type(exc).__name__
         error_code = getattr(exc, "error", None)
         error_description = getattr(exc, "description", None)
 
+        # Never display authorization codes, request URLs,
+        # client secrets, access tokens, or refresh tokens.
         st.query_params.clear()
 
         st.error(
@@ -214,11 +208,10 @@ def handle_google_oauth_callback():
             f"Error type: {error_type}."
         )
 
-        if error_code and isinstance(error_code, str):
+        if isinstance(error_code, str):
             st.write("OAuth error code:", error_code[:100])
 
-        if error_description and isinstance(error_description, str):
-            # Avoid rendering a long or unexpected provider message.
+        if isinstance(error_description, str):
             st.write(
                 "OAuth error description:",
                 error_description[:200],
@@ -229,7 +222,7 @@ def handle_google_oauth_callback():
                 "Google rejected the authorization-code exchange. "
                 "Start a fresh connection and approve access once. "
                 "If it fails again, verify the Web client credentials "
-                "and the exact redirect URI used for both steps."
+                "and the exact redirect URI used in both OAuth steps."
             )
 
         return True
