@@ -1,6 +1,7 @@
 import json
 import secrets
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from cryptography.fernet import Fernet
@@ -18,6 +19,8 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 REDIRECT_URI = (
     "https://smart-timetable-assistant-phystar.streamlit.app/"
 )
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 def _fernet():
@@ -59,52 +62,77 @@ def _new_flow(state=None):
 
 
 def start_google_oauth():
-    """Start Google Calendar authorization with a PKCE verifier."""
+    """Display an enhanced Google Calendar connection panel."""
     user = get_current_user()
 
-    if not user:
-        st.error("Please sign in to your app first.")
-        return
-
-    try:
-        # Create the flow and generate a PKCE verifier.
-        flow = _new_flow()
-        verifier = secrets.token_urlsafe(64)
-
-        # Encrypt the verifier before including it in signed state.
-        encrypted_verifier = _fernet().encrypt(
-            verifier.encode("utf-8")
-        ).decode("utf-8")
-
-        state = _state_serializer().dumps(
-            {
-                "user_id": str(user.id),
-                "encrypted_verifier": encrypted_verifier,
-            }
+    with st.container(border=True):
+        st.markdown("### 📅 Google Calendar")
+        st.caption(
+            "Connect your calendar to bring your scheduled events "
+            "into Smart Timetable Assistant."
         )
 
-        # Preserve the same verifier used to generate the challenge.
-        flow.code_verifier = verifier
+        st.divider()
 
-        authorization_url, _ = flow.authorization_url(
-            state=state,
-            access_type="offline",
-            prompt="consent",
-            include_granted_scopes="true",
-            code_challenge_method="S256",
+        if not user:
+            st.info(
+                "Sign in to your Smart Timetable Assistant account "
+                "before connecting Google Calendar."
+            )
+            return
+
+        st.markdown("*What you can do after connecting*")
+        st.markdown(
+            "- Import upcoming timed calendar events\n"
+            "- Create timetable events in Google Calendar\n"
+            "- Keep your schedule organized in one place"
         )
 
-        st.link_button(
-            "Continue to Google",
-            authorization_url,
-        )
+        st.divider()
 
-    except Exception as exc:
-        st.error(
-            "Could not start Google Calendar authorization. "
-            f"Error type: {type(exc)._name_}. "
-            "Check the app configuration and deployment logs."
-        )
+        try:
+            flow = _new_flow()
+            verifier = secrets.token_urlsafe(64)
+
+            encrypted_verifier = _fernet().encrypt(
+                verifier.encode("utf-8")
+            ).decode("utf-8")
+
+            state = _state_serializer().dumps(
+                {
+                    "user_id": str(user.id),
+                    "encrypted_verifier": encrypted_verifier,
+                }
+            )
+
+            # Preserve the PKCE verifier for the callback.
+            flow.code_verifier = verifier
+
+            authorization_url, _ = flow.authorization_url(
+                state=state,
+                access_type="offline",
+                prompt="consent",
+                include_granted_scopes="true",
+                code_challenge_method="S256",
+            )
+
+            st.link_button(
+                "Connect Google Calendar",
+                authorization_url,
+                type="primary",
+                use_container_width=True,
+            )
+
+            st.caption(
+                "You'll be redirected to Google to approve access. "
+                "Stored Google credentials are encrypted by the app."
+            )
+
+        except Exception as exc:
+            st.error(
+                "Unable to start Google Calendar connection. "
+                f"Error type: {type(exc)._name_}."
+            )
 
 
 def handle_google_oauth_callback():
@@ -143,7 +171,6 @@ def handle_google_oauth_callback():
         return True
 
     try:
-        # Validate the signed state and its expiration.
         state_data = _state_serializer().loads(
             returned_state,
             max_age=600,
@@ -164,13 +191,11 @@ def handle_google_oauth_callback():
                 "PKCE verifier is missing from OAuth state."
             )
 
-        # Restore the original PKCE verifier.
         verifier = _fernet().decrypt(
             encrypted_verifier.encode("utf-8")
         ).decode("utf-8")
 
-        # Re-create the flow and restore the verifier before
-        # exchanging the one-time authorization code.
+        # Restore the original PKCE verifier before token exchange.
         flow = _new_flow(state=returned_state)
         flow.code_verifier = verifier
         flow.fetch_token(code=code)
@@ -182,7 +207,6 @@ def handle_google_oauth_callback():
                 "Google did not return an access token."
             )
 
-        # Encrypt the Google credentials before storing them.
         encrypted_token = _fernet().encrypt(
             credentials.to_json().encode("utf-8")
         ).decode("utf-8")
@@ -231,11 +255,9 @@ def handle_google_oauth_callback():
         error_code = getattr(exc, "error", None)
         error_description = getattr(exc, "description", None)
 
-        # Remove the one-time authorization code from the URL.
         st.query_params.clear()
 
-        # Never display authorization codes, tokens, secrets,
-        # or complete OAuth request URLs.
+        # Never display authorization codes, tokens, or secrets.
         st.error(
             "Google Calendar connection failed. "
             f"Error type: {error_type}."
@@ -254,7 +276,7 @@ def handle_google_oauth_callback():
             st.info(
                 "Google rejected the authorization-code exchange. "
                 "Start a fresh connection and approve access once. "
-                "If the error persists, check the Web client credentials, "
+                "If it persists, check the Web client credentials, "
                 "redirect URI, and PKCE configuration."
             )
 
@@ -354,10 +376,10 @@ def get_calendar_service():
 
 
 def get_calendar_events():
-    """Fetch upcoming timed events from the primary Google Calendar."""
+    """Fetch upcoming timed events and convert them to Indian Standard Time."""
     service = get_calendar_service()
 
-    now = datetime.now().astimezone()
+    now = datetime.now(LOCAL_TIMEZONE)
     end_date = now + timedelta(days=90)
 
     response = (
@@ -384,17 +406,18 @@ def get_calendar_events():
 
         start_dt = datetime.fromisoformat(
             start["dateTime"].replace("Z", "+00:00")
-        )
+        ).astimezone(LOCAL_TIMEZONE)
+
         end_dt = datetime.fromisoformat(
             end["dateTime"].replace("Z", "+00:00")
-        )
+        ).astimezone(LOCAL_TIMEZONE)
 
         classes.append(
             {
                 "subject": event.get("summary", "Untitled"),
                 "Day": start_dt.strftime("%A"),
-                "Start Time": start_dt.time(),
-                "End Time": end_dt.time(),
+                "Start Time": start_dt.time().replace(tzinfo=None),
+                "End Time": end_dt.time().replace(tzinfo=None),
                 "Teacher": "",
                 "Room": "",
             }
@@ -421,17 +444,25 @@ def create_calendar_event(
     start_dt = datetime.combine(
         event_date,
         start_time,
-    ).astimezone()
+        tzinfo=LOCAL_TIMEZONE,
+    )
 
     end_dt = datetime.combine(
         event_date,
         end_time,
-    ).astimezone()
+        tzinfo=LOCAL_TIMEZONE,
+    )
 
     event_body = {
         "summary": subject.strip(),
-        "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": end_dt.isoformat()},
+        "start": {
+            "dateTime": start_dt.isoformat(),
+            "timeZone": "Asia/Kolkata",
+        },
+        "end": {
+            "dateTime": end_dt.isoformat(),
+            "timeZone": "Asia/Kolkata",
+        },
     }
 
     return (
