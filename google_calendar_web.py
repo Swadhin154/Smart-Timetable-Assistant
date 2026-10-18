@@ -25,9 +25,7 @@ def _fernet():
 
 def _redirect_uri():
     """Return the registered Google OAuth redirect URI."""
-    return (
-        "https://smart-timetable-assistant-phystar.streamlit.app/"
-    )
+    return "https://smart-timetable-assistant-phystar.streamlit.app/"
 
 
 def _new_flow(state=None):
@@ -83,9 +81,7 @@ def handle_google_oauth_callback():
         return False
 
     user = get_current_user()
-    expected_state = st.session_state.get(
-        "google_oauth_state"
-    )
+    expected_state = st.session_state.get("google_oauth_state")
 
     if not user:
         st.error(
@@ -99,7 +95,8 @@ def handle_google_oauth_callback():
         or returned_state != expected_state
     ):
         st.error(
-            "Authorization verification failed. Please try again."
+            "Authorization verification failed. "
+            "Please try connecting Google Calendar again."
         )
         st.session_state.pop("google_oauth_state", None)
         st.query_params.clear()
@@ -116,33 +113,34 @@ def handle_google_oauth_callback():
 
         client = get_supabase_client()
 
-        response = client.table(
-            "google_calendar_tokens"
-        ).upsert({
-            "user_id": str(user.id),
-            "encrypted_token": encrypted_token,
-            "updated_at": datetime.now().astimezone().isoformat(),
-        }).execute()
+        response = (
+            client.table("google_calendar_tokens")
+            .upsert({
+                "user_id": str(user.id),
+                "encrypted_token": encrypted_token,
+                "updated_at": datetime.now().astimezone().isoformat(),
+            })
+            .execute()
+        )
 
         if response is None:
             raise RuntimeError(
-                "Supabase returned no response when saving "
+                "Supabase returned no response while saving "
                 "the Google Calendar token."
             )
 
-        st.session_state.pop(
-            "google_oauth_state", None
-        )
+        st.session_state.pop("google_oauth_state", None)
         st.query_params.clear()
 
-        st.success(
-            "Google Calendar connected successfully!"
-        )
+        st.success("Google Calendar connected successfully!")
         return True
 
-    except Exception as e:
+    except Exception:
+        # Avoid displaying authorization codes or sensitive
+        # provider responses to the user.
         st.error(
-            f"Google Calendar connection failed: {e}"
+            "Google Calendar connection failed. "
+            "Check the app logs and OAuth settings, then try again."
         )
         st.query_params.clear()
         return True
@@ -157,7 +155,6 @@ def get_calendar_service():
 
     client = get_supabase_client()
 
-    # Fetch this user's saved Google token.
     response = (
         client.table("google_calendar_tokens")
         .select("encrypted_token")
@@ -168,8 +165,8 @@ def get_calendar_service():
 
     if response is None:
         raise RuntimeError(
-            "Supabase returned None from the token lookup. "
-            "Check the Supabase client and installed dependencies."
+            "Supabase returned no response when looking up "
+            "the Google Calendar token."
         )
 
     records = response.data
@@ -180,8 +177,7 @@ def get_calendar_service():
             "Click Connect Google Calendar and authorize access first."
         )
 
-    token_record = records[0]
-    encrypted_token = token_record.get("encrypted_token")
+    encrypted_token = records[0].get("encrypted_token")
 
     if not encrypted_token:
         raise RuntimeError(
@@ -189,7 +185,6 @@ def get_calendar_service():
             "Please reconnect Google Calendar."
         )
 
-    # Decrypt the saved credentials.
     token_json = _fernet().decrypt(
         encrypted_token.encode()
     ).decode()
@@ -199,7 +194,6 @@ def get_calendar_service():
         SCOPES,
     )
 
-    # Refresh expired credentials when a refresh token is available.
     if credentials.expired:
         if not credentials.refresh_token:
             raise RuntimeError(
@@ -213,18 +207,20 @@ def get_calendar_service():
             credentials.to_json().encode()
         ).decode()
 
-        update_response = client.table(
-            "google_calendar_tokens"
-        ).upsert({
-            "user_id": str(user.id),
-            "encrypted_token": updated_encrypted_token,
-            "updated_at": datetime.now().astimezone().isoformat(),
-        }).execute()
+        update_response = (
+            client.table("google_calendar_tokens")
+            .upsert({
+                "user_id": str(user.id),
+                "encrypted_token": updated_encrypted_token,
+                "updated_at": datetime.now().astimezone().isoformat(),
+            })
+            .execute()
+        )
 
         if update_response is None:
             raise RuntimeError(
                 "Google credentials were refreshed, but Supabase "
-                "returned no response when saving the updated token."
+                "returned no response while saving the updated token."
             )
 
     if not credentials.valid:
@@ -262,7 +258,7 @@ def get_calendar_events():
         start = event.get("start", {})
         end = event.get("end", {})
 
-        # Skip all-day events because the timetable uses start/end times.
+        # Skip all-day events because the timetable uses times.
         if "dateTime" not in start or "dateTime" not in end:
             continue
 
