@@ -1,4 +1,5 @@
 import json
+import secrets
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -33,12 +34,12 @@ def _state_serializer():
 
 
 def _redirect_uri():
-    """Return the exact registered Google OAuth redirect URI."""
+    """Return the registered Google OAuth redirect URI."""
     return REDIRECT_URI
 
 
 def _new_flow(state=None):
-    """Create the Google OAuth flow using the configured Web client."""
+    """Create a Google OAuth flow using the configured Web client."""
     client_config = {
         "web": {
             "client_id": st.secrets["GOOGLE_WEB_CLIENT_ID"],
@@ -58,7 +59,7 @@ def _new_flow(state=None):
 
 
 def start_google_oauth():
-    """Start Google Calendar authorization for the signed-in user."""
+    """Start Google Calendar authorization with a PKCE verifier."""
     user = get_current_user()
 
     if not user:
@@ -66,16 +67,31 @@ def start_google_oauth():
         return
 
     try:
+        # Create the flow and generate a PKCE verifier.
+        flow = _new_flow()
+        verifier = secrets.token_urlsafe(64)
+
+        # Encrypt the verifier before including it in signed state.
+        encrypted_verifier = _fernet().encrypt(
+            verifier.encode("utf-8")
+        ).decode("utf-8")
+
         state = _state_serializer().dumps(
-            {"user_id": str(user.id)}
+            {
+                "user_id": str(user.id),
+                "encrypted_verifier": encrypted_verifier,
+            }
         )
 
-        flow = _new_flow(state=state)
+        # Preserve the same verifier used to generate the challenge.
+        flow.code_verifier = verifier
 
         authorization_url, _ = flow.authorization_url(
+            state=state,
             access_type="offline",
             prompt="consent",
             include_granted_scopes="true",
+            code_challenge_method="S256",
         )
 
         st.link_button(
@@ -101,7 +117,7 @@ def handle_google_oauth_callback():
         st.query_params.clear()
         st.error(
             "Google Calendar authorization was cancelled or denied. "
-            "Please try connecting again if you want to continue."
+            "Please start a new connection if you want to continue."
         )
         return True
 
@@ -127,6 +143,7 @@ def handle_google_oauth_callback():
         return True
 
     try:
+        # Validate the signed state and its expiration.
         state_data = _state_serializer().loads(
             returned_state,
             max_age=600,
@@ -140,9 +157,24 @@ def handle_google_oauth_callback():
             )
             return True
 
-        # Exchange the one-time authorization code.
+        encrypted_verifier = state_data.get("encrypted_verifier")
+
+        if not encrypted_verifier:
+            raise RuntimeError(
+                "PKCE verifier is missing from OAuth state."
+            )
+
+        # Restore the original PKCE verifier.
+        verifier = _fernet().decrypt(
+            encrypted_verifier.encode("utf-8")
+        ).decode("utf-8")
+
+        # Re-create the flow and restore the verifier before
+        # exchanging the one-time authorization code.
         flow = _new_flow(state=returned_state)
+        flow.code_verifier = verifier
         flow.fetch_token(code=code)
+
         credentials = flow.credentials
 
         if not credentials.token:
@@ -150,7 +182,7 @@ def handle_google_oauth_callback():
                 "Google did not return an access token."
             )
 
-        # Encrypt the token before storing it.
+        # Encrypt the Google credentials before storing them.
         encrypted_token = _fernet().encrypt(
             credentials.to_json().encode("utf-8")
         ).decode("utf-8")
@@ -199,10 +231,11 @@ def handle_google_oauth_callback():
         error_code = getattr(exc, "error", None)
         error_description = getattr(exc, "description", None)
 
-        # Never display authorization codes, request URLs,
-        # client secrets, access tokens, or refresh tokens.
+        # Remove the one-time authorization code from the URL.
         st.query_params.clear()
 
+        # Never display authorization codes, tokens, secrets,
+        # or complete OAuth request URLs.
         st.error(
             "Google Calendar connection failed. "
             f"Error type: {error_type}."
@@ -221,8 +254,8 @@ def handle_google_oauth_callback():
             st.info(
                 "Google rejected the authorization-code exchange. "
                 "Start a fresh connection and approve access once. "
-                "If it fails again, verify the Web client credentials "
-                "and the exact redirect URI used in both OAuth steps."
+                "If the error persists, check the Web client credentials, "
+                "redirect URI, and PKCE configuration."
             )
 
         return True
@@ -345,7 +378,7 @@ def get_calendar_events():
         start = event.get("start", {})
         end = event.get("end", {})
 
-        # Skip all-day events because this timetable uses times.
+        # Skip all-day events because the timetable uses times.
         if "dateTime" not in start or "dateTime" not in end:
             continue
 
