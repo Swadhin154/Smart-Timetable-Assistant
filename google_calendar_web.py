@@ -1,11 +1,15 @@
 import json
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 from cryptography.fernet import Fernet
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from itsdangerous import (
+    URLSafeTimedSerializer,
+    BadSignature,
+    SignatureExpired,
+)
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -24,12 +28,14 @@ LOCAL_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 def _fernet():
-    """Return the encryption helper for stored Google tokens."""
-    return Fernet(st.secrets["TOKEN_ENCRYPTION_KEY"].encode())
+    """Return the encryption helper for stored credentials."""
+    return Fernet(
+        st.secrets["TOKEN_ENCRYPTION_KEY"].encode()
+    )
 
 
 def _state_serializer():
-    """Create a signed serializer for OAuth state."""
+    """Create a signed serializer for OAuth state verification."""
     return URLSafeTimedSerializer(
         st.secrets["TOKEN_ENCRYPTION_KEY"],
         salt="google-oauth-state",
@@ -62,81 +68,110 @@ def _new_flow(state=None):
 
 
 def start_google_oauth():
-    """Display an enhanced Google Calendar connection panel."""
+    """
+    Start Google OAuth.
+
+    A short-lived, encrypted app session and the PKCE verifier are saved
+    server-side. They are not placed directly in the browser URL.
+    """
     user = get_current_user()
 
-    with st.container(border=True):
-        st.markdown("### 📅 Google Calendar")
-        st.caption(
-            "Connect your calendar to bring your scheduled events "
-            "into Smart Timetable Assistant."
+    if not user:
+        st.info(
+            "Sign in to Smart Timetable Assistant before "
+            "connecting Google Calendar."
+        )
+        return
+
+    access_token = st.session_state.get(
+        "supabase_access_token"
+    )
+    refresh_token = st.session_state.get(
+        "supabase_refresh_token"
+    )
+
+    if not access_token or not refresh_token:
+        st.error(
+            "Your app login session is incomplete. "
+            "Please sign out and sign in again."
+        )
+        return
+
+    try:
+        flow = _new_flow()
+
+        verifier = secrets.token_urlsafe(64)
+        nonce = secrets.token_urlsafe(32)
+
+        # State is signed and contains no raw login tokens.
+        state = _state_serializer().dumps(
+            {
+                "user_id": str(user.id),
+                "nonce": nonce,
+            }
         )
 
-        st.divider()
+        flow.code_verifier = verifier
 
-        if not user:
-            st.info(
-                "Sign in to your Smart Timetable Assistant account "
-                "before connecting Google Calendar."
-            )
-            return
+        client = get_supabase_client()
 
-        st.markdown("*What you can do after connecting*")
-        st.markdown(
-            "- Import upcoming timed calendar events\n"
-            "- Create timetable events in Google Calendar\n"
-            "- Keep your schedule organized in one place"
-        )
-
-        st.divider()
-
-        try:
-            flow = _new_flow()
-            verifier = secrets.token_urlsafe(64)
-
-            encrypted_verifier = _fernet().encrypt(
+        pending_row = {
+            "nonce": nonce,
+            "user_id": str(user.id),
+            "encrypted_access_token": _fernet().encrypt(
+                access_token.encode("utf-8")
+            ).decode("utf-8"),
+            "encrypted_refresh_token": _fernet().encrypt(
+                refresh_token.encode("utf-8")
+            ).decode("utf-8"),
+            "encrypted_verifier": _fernet().encrypt(
                 verifier.encode("utf-8")
-            ).decode("utf-8")
+            ).decode("utf-8"),
+            "expires_at": (
+                datetime.now(timezone.utc)
+                + timedelta(minutes=10)
+            ).isoformat(),
+        }
 
-            state = _state_serializer().dumps(
-                {
-                    "user_id": str(user.id),
-                    "encrypted_verifier": encrypted_verifier,
-                }
-            )
+        # The table must be accessible only through server-side credentials.
+        client.table("google_oauth_pending").upsert(
+            pending_row
+        ).execute()
 
-            # Preserve the PKCE verifier for the callback.
-            flow.code_verifier = verifier
+        authorization_url, _ = flow.authorization_url(
+            state=state,
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+            code_challenge_method="S256",
+        )
 
-            authorization_url, _ = flow.authorization_url(
-                state=state,
-                access_type="offline",
-                prompt="consent",
-                include_granted_scopes="true",
-                code_challenge_method="S256",
-            )
+        st.link_button(
+            "Continue to Google",
+            authorization_url,
+            type="primary",
+            use_container_width=True,
+        )
 
-            st.link_button(
-                "Connect Google Calendar",
-                authorization_url,
-                type="primary",
-                use_container_width=True,
-            )
+        st.caption(
+            "Google will ask you to approve calendar access. "
+            "Return here after approval."
+        )
 
-            st.caption(
-                "You'll be redirected to Google to approve access. "
-                "Stored Google credentials are encrypted by the app."
-            )
-
-        except Exception as exc:
-            st.error(
-                "Unable to start Google Calendar connection. "
-                f"Error type: {type(exc)._name_}."
-            )
+    except Exception as exc:
+        st.error(
+            "Unable to start Google Calendar connection. "
+            f"Error type: {type(exc)._name_}."
+        )
 
 
 def handle_google_oauth_callback():
-    """Verify Google's callback, exchange the code, and save the token."""
+    """
+    Process Google's redirect before the app login gate.
+
+    Verify the signed state, restore the short-lived encrypted app session,
+    exchange the authorization code, and save the encrypted Google token.
+    """
     code = st.query_params.get("code")
     returned_state = st.query_params.get("state")
     oauth_error = st.query_params.get("error")
@@ -145,22 +180,12 @@ def handle_google_oauth_callback():
         st.query_params.clear()
         st.error(
             "Google Calendar authorization was cancelled or denied. "
-            "Please start a new connection if you want to continue."
+            "You can try connecting again."
         )
         return True
 
     if not code:
         return False
-
-    user = get_current_user()
-
-    if not user:
-        st.query_params.clear()
-        st.error(
-            "Your app session has expired. Please sign in again "
-            "and reconnect Google Calendar."
-        )
-        return True
 
     if not returned_state:
         st.query_params.clear()
@@ -171,31 +196,86 @@ def handle_google_oauth_callback():
         return True
 
     try:
+        # Never trust user ID or nonce until the signed state is verified.
         state_data = _state_serializer().loads(
             returned_state,
             max_age=600,
         )
 
-        if state_data.get("user_id") != str(user.id):
-            st.query_params.clear()
-            st.error(
-                "Authorization verification failed. "
-                "Please sign in to the correct account and try again."
+        user_id = str(state_data.get("user_id", ""))
+        nonce = str(state_data.get("nonce", ""))
+
+        if not user_id or not nonce:
+            raise ValueError(
+                "Required OAuth state values are missing."
             )
-            return True
 
-        encrypted_verifier = state_data.get("encrypted_verifier")
+        client = get_supabase_client()
 
-        if not encrypted_verifier:
+        pending_response = (
+            client.table("google_oauth_pending")
+            .select("*")
+            .eq("nonce", nonce)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+
+        pending_rows = pending_response.data or []
+
+        if not pending_rows:
             raise RuntimeError(
-                "PKCE verifier is missing from OAuth state."
+                "The temporary login session expired. "
+                "Start the connection again."
             )
 
-        verifier = _fernet().decrypt(
-            encrypted_verifier.encode("utf-8")
+        pending = pending_rows[0]
+
+        expires_at = datetime.fromisoformat(
+            str(pending["expires_at"]).replace("Z", "+00:00")
+        )
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(
+                tzinfo=timezone.utc
+            )
+
+        if datetime.now(timezone.utc) >= expires_at:
+            raise RuntimeError(
+                "The temporary login session expired. "
+                "Start the connection again."
+            )
+
+        # Restore the app login session from the encrypted server-side row.
+        restored_access_token = _fernet().decrypt(
+            pending["encrypted_access_token"].encode("utf-8")
         ).decode("utf-8")
 
-        # Restore the original PKCE verifier before token exchange.
+        restored_refresh_token = _fernet().decrypt(
+            pending["encrypted_refresh_token"].encode("utf-8")
+        ).decode("utf-8")
+
+        st.session_state["supabase_access_token"] = (
+            restored_access_token
+        )
+        st.session_state["supabase_refresh_token"] = (
+            restored_refresh_token
+        )
+        st.session_state["supabase_user_id"] = user_id
+
+        user = get_current_user()
+
+        if not user or str(user.id) != user_id:
+            raise RuntimeError(
+                "Your app session could not be restored. "
+                "Please sign in and reconnect."
+            )
+
+        # Restore the PKCE verifier before exchanging the code.
+        verifier = _fernet().decrypt(
+            pending["encrypted_verifier"].encode("utf-8")
+        ).decode("utf-8")
+
         flow = _new_flow(state=returned_state)
         flow.code_verifier = verifier
         flow.fetch_token(code=code)
@@ -207,38 +287,35 @@ def handle_google_oauth_callback():
                 "Google did not return an access token."
             )
 
+        # Store Google credentials encrypted in Supabase.
         encrypted_token = _fernet().encrypt(
             credentials.to_json().encode("utf-8")
         ).decode("utf-8")
 
-        client = get_supabase_client()
+        client.table("google_calendar_tokens").upsert(
+            {
+                "user_id": user_id,
+                "encrypted_token": encrypted_token,
+                "updated_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        ).execute()
 
-        response = (
-            client.table("google_calendar_tokens")
-            .upsert(
-                {
-                    "user_id": str(user.id),
-                    "encrypted_token": encrypted_token,
-                    "updated_at": datetime.now().astimezone().isoformat(),
-                }
-            )
-            .execute()
-        )
-
-        if response is None:
-            raise RuntimeError(
-                "Supabase returned no response while saving the token."
-            )
+        # Remove the temporary OAuth record after successful connection.
+        client.table("google_oauth_pending").delete().eq(
+            "nonce", nonce
+        ).execute()
 
         st.query_params.clear()
-        st.success("Google Calendar connected successfully!")
+        st.session_state["google_calendar_just_connected"] = True
         return True
 
     except SignatureExpired:
         st.query_params.clear()
         st.error(
-            "Google authorization expired. Please start a new "
-            "Google Calendar connection."
+            "Google authorization expired. "
+            "Please start a new connection."
         )
         return True
 
@@ -246,45 +323,55 @@ def handle_google_oauth_callback():
         st.query_params.clear()
         st.error(
             "Authorization verification failed. "
-            "Please start a new Google Calendar connection."
+            "Please start a new connection."
         )
         return True
 
     except Exception as exc:
-        error_type = type(exc).__name__
-        error_code = getattr(exc, "error", None)
-        error_description = getattr(exc, "description", None)
-
         st.query_params.clear()
 
-        # Never display authorization codes, tokens, or secrets.
         st.error(
             "Google Calendar connection failed. "
-            f"Error type: {error_type}."
+            f"Error type: {type(exc)._name_}."
         )
 
-        if isinstance(error_code, str):
-            st.write("OAuth error code:", error_code[:100])
-
-        if isinstance(error_description, str):
-            st.write(
-                "OAuth error description:",
-                error_description[:200],
-            )
-
-        if error_type == "InvalidGrantError":
-            st.info(
-                "Google rejected the authorization-code exchange. "
-                "Start a fresh connection and approve access once. "
-                "If it persists, check the Web client credentials, "
-                "redirect URI, and PKCE configuration."
-            )
+        # Display safe explanatory messages, never tokens or secrets.
+        if isinstance(exc, RuntimeError):
+            st.info(str(exc))
 
         return True
 
 
+def is_google_calendar_connected():
+    """
+    Check whether the signed-in app user has a saved Google token.
+
+    This checks for a saved record; the actual Google operation checks
+    whether the credentials are usable.
+    """
+    user = get_current_user()
+
+    if not user:
+        return False
+
+    try:
+        response = (
+            get_supabase_client()
+            .table("google_calendar_tokens")
+            .select("user_id")
+            .eq("user_id", str(user.id))
+            .limit(1)
+            .execute()
+        )
+
+        return bool(response.data)
+
+    except Exception:
+        return False
+
+
 def get_calendar_service():
-    """Load and validate the signed-in user's Google credentials."""
+    """Load the current user's encrypted Google credentials and build API."""
     user = get_current_user()
 
     if not user:
@@ -300,12 +387,7 @@ def get_calendar_service():
         .execute()
     )
 
-    if response is None:
-        raise RuntimeError(
-            "Supabase returned no response while looking up the token."
-        )
-
-    records = response.data
+    records = response.data if response else None
 
     if not records:
         raise RuntimeError(
@@ -333,8 +415,8 @@ def get_calendar_service():
     if credentials.expired:
         if not credentials.refresh_token:
             raise RuntimeError(
-                "Google authorization has expired and no refresh token "
-                "is available. Please reconnect Google Calendar."
+                "Google authorization has expired and no refresh "
+                "token is available. Please reconnect Google Calendar."
             )
 
         credentials.refresh(Request())
@@ -343,23 +425,15 @@ def get_calendar_service():
             credentials.to_json().encode("utf-8")
         ).decode("utf-8")
 
-        update_response = (
-            client.table("google_calendar_tokens")
-            .upsert(
-                {
-                    "user_id": str(user.id),
-                    "encrypted_token": updated_encrypted_token,
-                    "updated_at": datetime.now().astimezone().isoformat(),
-                }
-            )
-            .execute()
-        )
-
-        if update_response is None:
-            raise RuntimeError(
-                "Credentials were refreshed, but Supabase returned "
-                "no response while saving the updated token."
-            )
+        client.table("google_calendar_tokens").upsert(
+            {
+                "user_id": str(user.id),
+                "encrypted_token": updated_encrypted_token,
+                "updated_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        ).execute()
 
     if not credentials.valid:
         raise RuntimeError(
@@ -400,7 +474,7 @@ def get_calendar_events():
         start = event.get("start", {})
         end = event.get("end", {})
 
-        # Skip all-day events because the timetable uses times.
+        # Skip all-day events because this timetable uses times.
         if "dateTime" not in start or "dateTime" not in end:
             continue
 
@@ -420,6 +494,9 @@ def get_calendar_events():
                 "End Time": end_dt.time().replace(tzinfo=None),
                 "Teacher": "",
                 "Room": "",
+                "Date": start_dt.date(),
+                "Source": "Google Calendar",
+                "Google Event ID": event.get("id", ""),
             }
         )
 
@@ -432,7 +509,7 @@ def create_calendar_event(
     start_time,
     end_time,
 ):
-    """Create an event in the signed-in user's primary calendar."""
+    """Create one event in the signed-in user's primary calendar."""
     if not subject or not subject.strip():
         raise ValueError("Please enter an event title.")
 
