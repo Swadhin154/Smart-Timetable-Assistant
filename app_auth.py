@@ -3,12 +3,23 @@ from supabase import create_client
 
 
 def get_supabase_client():
+    
     """Create a server-side Supabase client."""
     return create_client(
         st.secrets["SUPABASE_URL"],
         st.secrets["SUPABASE_SECRET_KEY"],
     )
+def get_user_supabase_client():
+    """Create a Supabase client using the signed-in user's token."""
+    access_token = st.session_state.get("supabase_access_token")
 
+    if not access_token:
+        raise ValueError("Please sign in before accessing deadlines.")
+
+    client = get_supabase_client()
+    client.postgrest.auth(access_token)
+
+    return client
 
 def sign_up(email, password):
     """Register a new user with the correct confirmation redirect."""

@@ -7,6 +7,8 @@ from scheduling_logic import find_timetable_conflicts
 from free_time_logic import find_free_slots
 from study_recommendations import recommend_study_slots
 from natural_language import understand_request
+from deadline_logic import validate_deadline, get_deadline_status
+from deadline_planner import prioritize_deadlines
 from app_auth import sign_up, sign_in, sign_out, get_current_user
 from google_calendar_web import (
     create_calendar_event,
@@ -852,3 +854,149 @@ if st.button(
                 "Could not import Google Calendar events: "
                 f"{type(exc)._name_}: {exc}"
             )
+
+           # ---------------- DEADLINE MANAGER ----------------
+
+from deadline_storage import (
+    get_user_deadlines,
+    add_user_deadline,
+    delete_user_deadline,
+)
+
+st.divider()
+st.header("📅 Assignment & Exam Deadlines")
+
+current_user_id = st.session_state.get("supabase_user_id")
+
+if not current_user_id:
+    st.warning("Please sign in to manage your deadlines.")
+else:
+    with st.form("add_deadline_form"):
+        task_title = st.text_input(
+            "Assignment or exam name",
+            key="deadline_title",
+        )
+
+        due_date = st.date_input(
+            "Due date",
+            value=date.today(),
+            key="deadline_due_date",
+        )
+
+        estimated_hours = st.number_input(
+            "Estimated preparation hours",
+            min_value=0.5,
+            max_value=500.0,
+            value=2.0,
+            step=0.5,
+            key="deadline_estimated_hours",
+        )
+
+        priority = st.selectbox(
+            "Priority",
+            ["Low", "Medium", "High"],
+            index=1,
+            key="deadline_priority",
+        )
+
+        submitted = st.form_submit_button("Add Deadline")
+
+    if submitted:
+        is_valid, message = validate_deadline(
+            task_title,
+            due_date,
+            estimated_hours,
+            priority,
+        )
+
+        if is_valid:
+            try:
+                add_user_deadline(
+                    current_user_id,
+                    task_title.strip(),
+                    due_date,
+                    estimated_hours,
+                    priority,
+                )
+                st.success("Deadline saved successfully.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save deadline: {exc}")
+        else:
+            st.error(message)
+
+    st.subheader("Your Deadlines")
+
+    try:
+        deadlines = get_user_deadlines(current_user_id)
+        if deadlines:
+            st.subheader("🎯 Priority Deadlines")
+
+            ranked_deadlines = prioritize_deadlines(
+                deadlines,
+                today=date.today(),
+            )
+
+            for task in ranked_deadlines:
+                st.write(
+                    f"*{task['title']}* — "
+                    f"{task['status']} | "
+                    f"Priority: {task['priority']} | "
+                    f"Preparation: {task['estimated_hours']} hour(s)"
+                )
+
+        if deadlines:
+            today = date.today()
+
+            for deadline in deadlines:
+                deadline_id = deadline["id"]
+                deadline_date = date.fromisoformat(
+                    deadline["due_date"]
+                )
+
+                status_info = get_deadline_status(
+                    deadline_date,
+                    today=today,
+                )
+
+                days_remaining = status_info["days_remaining"]
+
+                if days_remaining < 0:
+                    timing = (
+                        f"Overdue by {abs(days_remaining)} day(s)"
+                    )
+                elif days_remaining == 0:
+                    timing = "Due today"
+                else:
+                    timing = f"{days_remaining} day(s) remaining"
+
+                with st.container(border=True):
+                    st.markdown(f"*{deadline['title']}*")
+                    st.write(f"Due date: {deadline_date}")
+                    st.write(f"Status: {timing}")
+                    st.write(
+                        f"Preparation time: "
+                        f"{deadline['estimated_hours']} hour(s)"
+                    )
+                    st.write(f"Priority: {deadline['priority']}")
+
+                    if st.button(
+                        "Delete Deadline",
+                        key=f"delete_deadline_{deadline_id}",
+                    ):
+                        try:
+                            delete_user_deadline(
+                                current_user_id,
+                                deadline_id,
+                            )
+                            st.success("Deadline deleted.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(
+                                f"Could not delete deadline: {exc}"
+                            )
+        else:
+            st.info("No deadlines added yet.")
+
+    except Exception as exc:
+        st.error(f"Could not load deadlines: {exc}")
