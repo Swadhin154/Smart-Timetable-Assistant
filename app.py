@@ -3,7 +3,10 @@ import io
 from datetime import date, datetime
 
 import streamlit as st
-
+from scheduling_logic import find_timetable_conflicts
+from free_time_logic import find_free_slots
+from study_recommendations import recommend_study_slots
+from natural_language import understand_request
 from app_auth import sign_up, sign_in, sign_out, get_current_user
 from google_calendar_web import (
     create_calendar_event,
@@ -168,20 +171,38 @@ if option == "Enter manually":
             st.error("End time must be after start time.")
 
         else:
-            st.session_state.classes.append(
-                {
-                    "subject": subject.strip(),
-                    "Day": day,
-                    "Start Time": start_time,
-                    "End Time": end_time,
-                    "Teacher": teacher.strip(),
-                    "Room": room.strip(),
-                    "Source": "Manual",
-                    "Date": None,
-                }
+            new_class = {
+                "subject": subject.strip(),
+                "Day": day,
+                "Start Time": start_time,
+                "End Time": end_time,
+                "Teacher": teacher.strip(),
+                "Room": room.strip(),
+                "Source": "Manual",
+                "Date": None,
+            }
+
+            duplicate_exists = any(
+                existing.get("subject", "").strip().casefold()
+                == new_class["subject"].casefold()
+                and existing.get("Day") == new_class["Day"]
+                and existing.get("Start Time") == new_class["Start Time"]
+                and existing.get("End Time") == new_class["End Time"]
+                and existing.get("Teacher", "").strip().casefold()
+                == new_class["Teacher"].casefold()
+                and existing.get("Room", "").strip().casefold()
+                == new_class["Room"].casefold()
+                for existing in st.session_state.classes
             )
 
-            st.success("Class added successfully!")
+            if duplicate_exists:
+                st.warning(
+                    "This class is already in your timetable. "
+                    "No Changes were made."
+                )
+            else:
+                st.session_state.classes.append(new_class)
+                st.success("Class added successfully!")
 
 # ---------- UPLOAD TIMETABLE CSV ----------
 elif option == "Upload a Timetable file":
@@ -303,6 +324,20 @@ else:
 
 # ---------- TIMETABLE DISPLAY ----------
 if st.session_state.classes:
+    conflicts = find_timetable_conflicts(st.session_state.classes)
+
+    if conflicts:
+        st.warning(
+            f"⚠️ Found {len(conflicts)} timetable clash(es). "
+            "Please review the conflicting classes below."
+        )
+        st.dataframe(
+            conflicts,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.success("No timetable clashes detected.")
     st.subheader("My Timetable")
 
     st.dataframe(
@@ -332,6 +367,7 @@ if st.session_state.classes:
     else:
         st.info(f"No classes scheduled for {selected_day}.")
 
+    
     col1, col2 = st.columns(2)
 
     with col1:
@@ -479,6 +515,222 @@ else:
         "or import from Google Calendar."
     )
 
+with st.expander("🕒 Find Free Time", expanded=False):
+    st.caption(
+        "Find available periods between 6:00 AM and 7:00 PM."
+    )
+
+    selected_day_for_free_time = st.selectbox(
+        "Choose a day",
+        options=[
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ],
+        key="free_time_selected_day",
+    )
+
+    min_duration = st.selectbox(
+        "Minimum available duration",
+        options=[5, 10, 15, 30, 45, 60],
+        index=3,
+        format_func=lambda minutes: f"{minutes} minutes",
+        key="free_time_min_duration",
+    )
+
+    free_slots = find_free_slots(
+        st.session_state.classes,
+        selected_day_for_free_time,
+        start_time="06:00",
+        end_time="19:00",
+        min_duration_minutes=min_duration,
+    )
+
+    if free_slots:
+        display_slots = []
+
+        for slot in free_slots:
+            total_minutes = slot["Duration (minutes)"]
+            hours, minutes = divmod(total_minutes, 60)
+
+            if hours and minutes:
+                duration_text = f"{hours} hr {minutes} min"
+            elif hours:
+                duration_text = f"{hours} hr"
+            else:
+                duration_text = f"{minutes} min"
+
+            display_slots.append({
+                "Start Time": slot["Start Time"],
+                "End Time": slot["End Time"],
+                "Available Duration": duration_text,
+            })
+
+        st.dataframe(
+            display_slots,
+            width="stretch",
+            hide_index=True,
+        )
+
+    else:
+        st.info(
+            f"No free periods of {min_duration} minutes or longer "
+            f"found on {selected_day_for_free_time} "
+            f"between 6:00 AM and 7:00 PM."
+        )
+with st.expander("📚 Study Time Recommendations", expanded=False):
+    st.caption(
+        "Identify the longest available study periods "
+        "based on your timetable."
+    )
+
+    recommendation_day = st.selectbox(
+        "Select a day",
+        options=DAYS,
+        key="study_recommendation_day",
+    )
+
+    recommendations = recommend_study_slots(
+        st.session_state.classes,
+        recommendation_day,
+        min_duration_minutes=30,
+        max_recommendations=3,
+        start_time="06:00",
+        end_time="19:00",
+    )
+
+    if recommendations:
+        st.dataframe(
+            recommendations,
+            width="stretch",
+            hide_index=True,
+        )
+
+        st.caption(
+            "Recommendations are ranked by available duration, "
+            "with the longest study periods shown first."
+        )
+    else:
+        st.info(
+            f"No study period of at least 30 minutes is available "
+            f"on {recommendation_day} between 6:00 AM and 7:00 PM."
+        )
+# ---------- ASK YOUR TIMETABLE ----------
+with st.expander("💬 Ask Your Timetable", expanded=False):
+   
+
+    user_request = st.text_input(
+        "What would you like to know?",
+        placeholder="e.g. Show study periods on Sunday",
+        key="natural_language_request",
+    )
+
+    if st.button("Ask", key="ask_timetable_button"):
+        result = understand_request(user_request)
+
+        if result["error"]:
+            st.warning(result["error"])
+
+        else:
+            requested_action = result["action"]
+            requested_day = result["day"]
+            timetable = st.session_state.classes
+
+            if requested_action == "find_free_time":
+                free_slots = find_free_slots(
+                    timetable,
+                    requested_day,
+                    start_time="06:00",
+                    end_time="19:00",
+                    min_duration_minutes=30,
+                )
+
+                st.subheader(f"Free Time — {requested_day}")
+
+                if free_slots:
+                    display_slots = []
+
+                    for slot in free_slots:
+                        total_minutes = slot["Duration (minutes)"]
+                        hours, minutes = divmod(total_minutes, 60)
+
+                        if hours and minutes:
+                            duration_text = f"{hours} hr {minutes} min"
+                        elif hours:
+                            duration_text = f"{hours} hr"
+                        else:
+                            duration_text = f"{minutes} min"
+
+                        display_slots.append({
+                            "Start Time": slot["Start Time"],
+                            "End Time": slot["End Time"],
+                            "Available Duration": duration_text,
+                        })
+
+                    st.dataframe(
+                        display_slots,
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.info(
+                        f"No free period of at least 30 minutes "
+                        f"was found on {requested_day}."
+                    )
+
+            elif requested_action == "study_recommendations":
+                recommendations = recommend_study_slots(
+                    timetable,
+                    requested_day,
+                    min_duration_minutes=30,
+                    max_recommendations=3,
+                    start_time="06:00",
+                    end_time="19:00",
+                )
+
+                st.subheader(
+                    f"Study Time Recommendations — {requested_day}"
+                )
+
+                if recommendations:
+                    st.dataframe(
+                        recommendations,
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.info(
+                        f"No study period of at least 30 minutes "
+                        f"was found on {requested_day}."
+                    )
+
+            elif requested_action == "check_conflicts":
+                all_conflicts = find_timetable_conflicts(timetable)
+
+                day_conflicts = [
+                    conflict
+                    for conflict in all_conflicts
+                    if str(conflict.get("Day", "")).casefold()
+                    == requested_day.casefold()
+                ]
+
+                st.subheader(f"Timetable Clashes — {requested_day}")
+
+                if day_conflicts:
+                    st.dataframe(
+                        day_conflicts,
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.success(
+                        f"No timetable clashes were found "
+                        f"on {requested_day}."
+                    )
 # ---------- GOOGLE CALENDAR CONNECTION STATUS ----------
 st.divider()
 st.subheader("Google Calendar")
