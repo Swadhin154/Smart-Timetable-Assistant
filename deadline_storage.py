@@ -22,8 +22,11 @@ def add_user_deadline(
     due_date,
     estimated_hours,
     priority,
+    reminder_at=None,
+    reminder_enabled=False,
 ):
-    """Save a deadline for one user."""
+    """Save a deadline and its optional reminder settings."""
+
     client = get_user_supabase_client()
 
     response = (
@@ -34,13 +37,13 @@ def add_user_deadline(
             "due_date": due_date.isoformat(),
             "estimated_hours": float(estimated_hours),
             "priority": priority,
+            "reminder_at": reminder_at,
+            "reminder_enabled": reminder_enabled,
         })
         .execute()
     )
 
     return response.data or []
-
-
 def delete_user_deadline(user_id, deadline_id):
     """Delete a deadline belonging to one user."""
     client = get_user_supabase_client()

@@ -3,3 +3,14 @@ token.json
 .streamlit/secrets.toml
 .venv/
 _pycache_/
+.venv
+# Backup files
+*_backup.py
+
+# Temporary email testing files
+email_service.py
+reminder_worker.py
+test_email.py
+
+# Jupyter temporary files
+.ipynb_checkpoints/

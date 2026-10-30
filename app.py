@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 import streamlit as st
 from scheduling_logic import find_timetable_conflicts
@@ -898,6 +898,24 @@ else:
             index=1,
             key="deadline_priority",
         )
+        reminder_enabled = st.checkbox(
+            "Enable email reminder",
+            value=False,
+            key="deadline_reminder_enabled",
+        )
+
+        reminder_date = st.date_input(
+            "Reminder date",
+            value=date.today(),
+            key="deadline_reminder_date",
+        )
+
+        reminder_time = st.time_input(
+            "Reminder time",
+            value=time(9, 0),
+            format="12h",
+            key="deadline_reminder_time",
+        )
 
         submitted = st.form_submit_button("Add Deadline")
 
@@ -910,20 +928,34 @@ else:
         )
 
         if is_valid:
-            try:
-                add_user_deadline(
-                    current_user_id,
-                    task_title.strip(),
-                    due_date,
-                    estimated_hours,
-                    priority,
-                )
-                st.success("Deadline saved successfully.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not save deadline: {exc}")
+                try:
+                    reminder_at = None
+
+                    if reminder_enabled:
+                        reminder_at = datetime.combine(
+                            reminder_date,
+                            reminder_time,
+                            tzinfo=__import__("zoneinfo").ZoneInfo("Asia/Kolkata"),
+                        ).isoformat()
+
+                    add_user_deadline(
+                        current_user_id,
+                        task_title.strip(),
+                        due_date,
+                        estimated_hours,
+                        priority,
+                        reminder_at=reminder_at,
+                        reminder_enabled=reminder_enabled,
+                    )
+
+                    st.success("Deadline saved successfully.")
+                    st.rerun()
+
+                except Exception as exc:
+                    st.error(f"Could not save deadline: {exc}")
+
         else:
-            st.error(message)
+                st.error(message)
 
     st.subheader("Your Deadlines")
 
