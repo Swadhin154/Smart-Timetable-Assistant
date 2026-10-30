@@ -250,52 +250,54 @@ elif option == "Upload a Timetable file":
                 uploaded_classes = []
                 invalid_rows = []
 
-            for row_number, row in enumerate(reader, start=2):
-                try:
-                    csv_day = row["Day"].strip().capitalize()
+                # Process every CSV row first.
+                for row_number, row in enumerate(reader, start=2):
+                    try:
+                        csv_day = row["Day"].strip().capitalize()
 
-                    csv_start = datetime.strptime(
-                        row["Start Time"].strip(),
-                        "%H:%M",
-                    ).time()
+                        csv_start = datetime.strptime(
+                            row["Start Time"].strip(),
+                            "%H:%M",
+                        ).time()
 
-                    csv_end = datetime.strptime(
-                        row["End Time"].strip(),
-                        "%H:%M",
-                    ).time()
+                        csv_end = datetime.strptime(
+                            row["End Time"].strip(),
+                            "%H:%M",
+                        ).time()
 
-                    csv_semester = (
-                        row.get("Semester", "Semester 1").strip()
-                        or "Semester 1"
-                    )
+                        csv_semester = (
+                            row.get("Semester", "Semester 1").strip()
+                            or "Semester 1"
+                        )
 
-                    if (
-                        csv_day not in DAYS
-                        or csv_start >= csv_end
-                        or not row["Subject"].strip()
-                        or csv_semester not in [
-                            f"Semester {i}" for i in range(1, 9)
-                        ]
-                    ):
-                        raise ValueError("Invalid timetable row")
+                        if (
+                            csv_day not in DAYS
+                            or csv_start >= csv_end
+                            or not row["Subject"].strip()
+                            or csv_semester not in [
+                                f"Semester {i}" for i in range(1, 9)
+                            ]
+                        ):
+                            raise ValueError("Invalid timetable row")
 
-                    uploaded_classes.append(
-                        {
-                            "semester": csv_semester,
-                            "subject": row["Subject"].strip(),
-                            "Day": csv_day,
-                            "Start Time": csv_start,
-                            "End Time": csv_end,
-                            "Teacher": row["Teacher"].strip(),
-                            "Room": row["Room"].strip(),
-                            "Source": "CSV",
-                            "Date": None,
-                        }
-                    )
+                        uploaded_classes.append(
+                            {
+                                "semester": csv_semester,
+                                "subject": row["Subject"].strip(),
+                                "Day": csv_day,
+                                "Start Time": csv_start,
+                                "End Time": csv_end,
+                                "Teacher": row["Teacher"].strip(),
+                                "Room": row["Room"].strip(),
+                                "Source": "CSV",
+                                "Date": None,
+                            }
+                        )
 
-                except (ValueError, AttributeError, KeyError):
-                    invalid_rows.append(row_number)
+                    except (ValueError, AttributeError, KeyError):
+                        invalid_rows.append(row_number)
 
+                # Show the preview only once, after processing all rows.
                 if uploaded_classes:
                     st.write("Preview")
                     st.dataframe(
@@ -305,7 +307,7 @@ elif option == "Upload a Timetable file":
 
                     if st.button(
                         "Add CSV classes to timetable",
-                        key="confirm_csv_import",
+                        key="csv_import_confirm_button_v3",
                     ):
                         st.session_state.classes.extend(uploaded_classes)
 
