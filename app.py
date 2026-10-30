@@ -146,6 +146,10 @@ if option == "Enter manually":
     st.subheader("Add a class")
 
     with st.form("class_form"):
+        semester = st.selectbox(
+        "Semester",
+        [f"Semester {i}" for i in range(1, 9)]
+    )
         subject = st.text_input("Subject")
         day = st.selectbox("Day", DAYS)
 
@@ -174,6 +178,7 @@ if option == "Enter manually":
 
         else:
             new_class = {
+                "semester": semester,
                 "subject": subject.strip(),
                 "Day": day,
                 "Start Time": start_time,
@@ -185,6 +190,8 @@ if option == "Enter manually":
             }
 
             duplicate_exists = any(
+                existing.get("semester") == new_class["semester"]
+                and
                 existing.get("subject", "").strip().casefold()
                 == new_class["subject"].casefold()
                 and existing.get("Day") == new_class["Day"]
@@ -243,42 +250,51 @@ elif option == "Upload a Timetable file":
                 uploaded_classes = []
                 invalid_rows = []
 
-                for row_number, row in enumerate(reader, start=2):
-                    try:
-                        csv_day = row["Day"].strip().capitalize()
+            for row_number, row in enumerate(reader, start=2):
+                try:
+                    csv_day = row["Day"].strip().capitalize()
 
-                        csv_start = datetime.strptime(
-                            row["Start Time"].strip(),
-                            "%H:%M",
-                        ).time()
+                    csv_start = datetime.strptime(
+                        row["Start Time"].strip(),
+                        "%H:%M",
+                    ).time()
 
-                        csv_end = datetime.strptime(
-                            row["End Time"].strip(),
-                            "%H:%M",
-                        ).time()
+                    csv_end = datetime.strptime(
+                        row["End Time"].strip(),
+                        "%H:%M",
+                    ).time()
 
-                        if (
-                            csv_day not in DAYS
-                            or csv_start >= csv_end
-                            or not row["Subject"].strip()
-                        ):
-                            raise ValueError("Invalid timetable row")
+                    csv_semester = (
+                        row.get("Semester", "Semester 1").strip()
+                        or "Semester 1"
+                    )
 
-                        uploaded_classes.append(
-                            {
-                                "subject": row["Subject"].strip(),
-                                "Day": csv_day,
-                                "Start Time": csv_start,
-                                "End Time": csv_end,
-                                "Teacher": row["Teacher"].strip(),
-                                "Room": row["Room"].strip(),
-                                "Source": "CSV",
-                                "Date": None,
-                            }
-                        )
+                    if (
+                        csv_day not in DAYS
+                        or csv_start >= csv_end
+                        or not row["Subject"].strip()
+                        or csv_semester not in [
+                            f"Semester {i}" for i in range(1, 9)
+                        ]
+                    ):
+                        raise ValueError("Invalid timetable row")
 
-                    except (ValueError, AttributeError, KeyError):
-                        invalid_rows.append(row_number)
+                    uploaded_classes.append(
+                        {
+                            "semester": csv_semester,
+                            "subject": row["Subject"].strip(),
+                            "Day": csv_day,
+                            "Start Time": csv_start,
+                            "End Time": csv_end,
+                            "Teacher": row["Teacher"].strip(),
+                            "Room": row["Room"].strip(),
+                            "Source": "CSV",
+                            "Date": None,
+                        }
+                    )
+
+                except (ValueError, AttributeError, KeyError):
+                    invalid_rows.append(row_number)
 
                 if uploaded_classes:
                     st.write("Preview")
@@ -340,35 +356,51 @@ if st.session_state.classes:
         )
     else:
         st.success("No timetable clashes detected.")
+
+    # ---------- MY TIMETABLE ----------
     st.subheader("My Timetable")
 
-    st.dataframe(
-        st.session_state.classes,
-        use_container_width=True,
-        hide_index=True,
+    selected_semester = st.selectbox(
+        "Select Semester",
+        ["Select Semester"] + [
+            f"Semester {i}" for i in range(1, 9)
+        ],
+        key="semester_timetable_filter",
     )
 
-    selected_day = st.selectbox(
-        "View timetable for a day",
-        DAYS,
-        key="daily_timetable_day",
-    )
-
-    day_classes = [
+    semester_classes = [
         item
         for item in st.session_state.classes
-        if item.get("Day") == selected_day
+        if item.get("semester", "Semester 1") == selected_semester
     ]
 
-    if day_classes:
+    if selected_semester != "Select Semester":
         st.dataframe(
-            day_classes,
+            semester_classes,
             use_container_width=True,
             hide_index=True,
         )
-    else:
-        st.info(f"No classes scheduled for {selected_day}.")
 
+        selected_day = st.selectbox(
+            "View timetable for a day",
+            DAYS,
+            key="daily_timetable_day",
+        )
+
+        day_classes = [
+            item
+            for item in semester_classes
+            if item.get("Day") == selected_day
+        ]
+
+        if day_classes:
+            st.dataframe(
+                day_classes,
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(f"No classes scheduled for {selected_day}.")
     
     col1, col2 = st.columns(2)
 
