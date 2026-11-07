@@ -10,6 +10,36 @@ from natural_language import understand_request
 from deadline_logic import validate_deadline, get_deadline_status
 from deadline_planner import prioritize_deadlines
 from app_auth import sign_up, sign_in, sign_out, get_current_user
+from academic_event_storage import (
+    get_user_academic_events,
+    add_user_academic_event,
+    update_user_academic_event,
+    delete_user_academic_event,
+)
+from course_storage import (
+    get_user_courses,
+    add_user_course,
+    update_user_course,
+    delete_user_course,
+)
+from exam_storage import (
+    get_user_exams,
+    add_user_exam,
+    update_user_exam,
+    delete_user_exam,
+)
+from study_session_storage import (
+    get_user_study_sessions,
+    add_user_study_session,
+    update_study_session_status,
+    delete_user_study_session,
+    delete_exam_study_sessions,
+)
+
+from exam_study_planner import (
+    generate_exam_study_plan,
+    calculate_recommended_hours,
+)
 from google_calendar_web import (
     create_calendar_event,
     get_calendar_events,
@@ -17,6 +47,42 @@ from google_calendar_web import (
     is_google_calendar_connected,
     start_google_oauth,
 )
+from academic_calendar import (
+    get_indian_national_holidays,
+    get_upcoming_holidays,
+)
+def format_time_display(value):
+    """Convert supported time values into 12-hour AM/PM format."""
+
+    if value is None or value == "":
+        return "-"
+
+    if isinstance(value, datetime):
+        value = value.time()
+
+    if isinstance(value, time):
+        return value.strftime("%I:%M %p")
+
+    value = str(value).strip()
+
+    for fmt in (
+        "%H:%M:%S",
+        "%H:%M",
+        "%I:%M:%S %p",
+        "%I:%M %p",
+    ):
+        try:
+            parsed_time = datetime.strptime(value, fmt)
+            return parsed_time.strftime("%I:%M %p")
+        except ValueError:
+            continue
+
+    return value
+
+
+def format_study_time(value):
+    """Maintain compatibility with existing study planner code."""
+    return format_time_display(value)
 
 DAYS = [
     "Monday", "Tuesday", "Wednesday", "Thursday",
@@ -129,7 +195,749 @@ st.write(
     "Organize your classes, assignments, exams, and study times "
     "in one place."
 )
+# ---------- COURSE MANAGEMENT ----------
+st.header("Courses")
 
+user_id = current_user.id
+
+try:
+    courses = get_user_courses(user_id)
+
+    with st.expander("Add a New Course", expanded=False):
+        with st.form("add_course_form"):
+            course_name = st.text_input("Course Name")
+            course_code = st.text_input("Course Code")
+
+            course_semester = st.selectbox(
+                "Semester",
+                [f"Semester {i}" for i in range(1, 9)],
+                key="course_semester",
+            )
+
+            course_credits = st.number_input(
+                "Credits",
+                min_value=0.0,
+                max_value=30.0,
+                value=0.0,
+                step=0.5,
+            )
+
+            course_teacher = st.text_input("Teacher")
+
+            add_course_submitted = st.form_submit_button(
+                "Add Course"
+            )
+
+        if add_course_submitted:
+            if not course_name.strip() or not course_code.strip():
+                st.error(
+                    "Please enter both course name and course code."
+                )
+            else:
+                add_user_course(
+                    user_id,
+                    course_name,
+                    course_code,
+                    course_semester,
+                    course_credits,
+                    course_teacher,
+                )
+
+                st.success("Course added successfully!")
+                st.rerun()
+
+    st.subheader("My Courses")
+
+    if courses:
+        st.dataframe(
+            courses,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        course_options = {
+            (
+                f"{course['course_code']} - "
+                f"{course['course_name']} "
+                f"({course['semester']})"
+            ): course
+            for course in courses
+        }
+
+        selected_course_label = st.selectbox(
+            "Select a course to manage",
+            list(course_options.keys()),
+            key="manage_course_selection",
+        )
+
+        selected_course = course_options[selected_course_label]
+        course_id = selected_course["id"]
+
+        with st.expander("Edit Selected Course"):
+            with st.form("edit_course_form"):
+                edit_course_name = st.text_input(
+                    "Course Name",
+                    value=selected_course["course_name"],
+                )
+
+                edit_course_code = st.text_input(
+                    "Course Code",
+                    value=selected_course["course_code"],
+                )
+
+                semester_options = [
+                    f"Semester {i}" for i in range(1, 9)
+                ]
+
+                current_semester = selected_course["semester"]
+
+                semester_index = (
+                    semester_options.index(current_semester)
+                    if current_semester in semester_options
+                    else 0
+                )
+
+                edit_course_semester = st.selectbox(
+                    "Semester",
+                    semester_options,
+                    index=semester_index,
+                    key="edit_course_semester",
+                )
+
+                edit_course_credits = st.number_input(
+                    "Credits",
+                    min_value=0.0,
+                    max_value=30.0,
+                    value=float(selected_course.get("credits") or 0),
+                    step=0.5,
+                    key="edit_course_credits",
+                )
+
+                edit_course_teacher = st.text_input(
+                    "Teacher",
+                    value=selected_course.get("teacher") or "",
+                )
+
+                update_course_submitted = st.form_submit_button(
+                    "Update Course"
+                )
+
+            if update_course_submitted:
+                if (
+                    not edit_course_name.strip()
+                    or not edit_course_code.strip()
+                ):
+                    st.error(
+                        "Course name and course code are required."
+                    )
+                else:
+                    update_user_course(
+                        user_id,
+                        course_id,
+                        edit_course_name,
+                        edit_course_code,
+                        edit_course_semester,
+                        edit_course_credits,
+                        edit_course_teacher,
+                    )
+
+                    st.success("Course updated successfully!")
+                    st.rerun()
+
+        if st.button(
+            "Delete Selected Course",
+            key="delete_course_button",
+        ):
+            delete_user_course(user_id, course_id)
+            st.success("Course deleted successfully!")
+            st.rerun()
+
+    else:
+        st.info(
+            "No courses added yet. Add your first course above."
+        )
+
+except Exception as e:
+    st.error(f"Could not load or manage courses: {e}")
+# ---------- EXAM MANAGEMENT ----------
+st.header("Manage Exams")
+
+try:
+    courses = get_user_courses(user_id)
+    exams = get_user_exams(user_id)
+
+    if not courses:
+        st.info(
+            "Please add at least one course before scheduling an exam."
+        )
+
+    else:
+        course_options = {
+            (
+                f"{course['course_code']} - "
+                f"{course['course_name']} "
+                f"({course['semester']})"
+            ): course
+            for course in courses
+        }
+
+        # ---------- ADD EXAM ----------
+        with st.expander("Add a New Exam", expanded=False):
+            with st.form("add_exam_form"):
+                exam_title = st.text_input("Exam Title")
+
+                selected_course_label = st.selectbox(
+                    "Select Course",
+                    list(course_options.keys()),
+                    key="add_exam_course",
+                )
+
+                exam_date = st.date_input(
+                    "Exam Date",
+                    value=date.today(),
+                    min_value=date.today(),
+                    key="add_exam_date",
+                )
+
+                exam_type = st.selectbox(
+                    "Exam Type",
+                    [
+                        "Mid-Semester",
+                        "End-Semester",
+                        "Internal",
+                        "Practical",
+                        "Other",
+                    ],
+                    key="add_exam_type",
+                )
+
+                include_exam_time = st.checkbox(
+                    "Add exam timing",
+                    key="include_exam_time",
+                )
+
+                exam_start_time = None
+                exam_end_time = None
+
+                if include_exam_time:
+                    exam_start_time = st.time_input(
+                        "Start Time",
+                        value=time(9, 0),
+                        key="add_exam_start",
+                    )
+
+                    exam_end_time = st.time_input(
+                        "End Time",
+                        value=time(12, 0),
+                        key="add_exam_end",
+                    )
+
+                exam_location = st.text_input("Exam Location")
+                exam_notes = st.text_area("Additional Notes")
+
+                add_exam_submitted = st.form_submit_button(
+                    "Add Exam"
+                )
+
+            if add_exam_submitted:
+                selected_course = course_options[
+                    selected_course_label
+                ]
+
+                if not exam_title.strip():
+                    st.error("Please enter an exam title.")
+
+                elif (
+                    include_exam_time
+                    and exam_start_time >= exam_end_time
+                ):
+                    st.error(
+                        "End time must be after start time."
+                    )
+
+                else:
+                    add_user_exam(
+                        user_id=user_id,
+                        course_id=selected_course["id"],
+                        exam_title=exam_title,
+                        exam_date=exam_date,
+                        start_time=exam_start_time,
+                        end_time=exam_end_time,
+                        exam_type=exam_type,
+                        location=exam_location,
+                        notes=exam_notes,
+                    )
+
+                    st.success("Exam added successfully!")
+                    st.rerun()
+
+        # ---------- VIEW EXAMS ----------
+        st.subheader("Upcoming and Scheduled Exams")
+
+        if exams:
+            course_lookup = {
+                course["id"]: course
+                for course in courses
+            }
+
+            display_exams = []
+
+            for exam in exams:
+                linked_course = course_lookup.get(
+                    exam.get("course_id")
+                )
+
+                display_exams.append(
+                    {
+                        "Exam": exam["exam_title"],
+                        "Course": (
+                            linked_course["course_name"]
+                            if linked_course
+                            else "Course unavailable"
+                        ),
+                        "Semester": (
+                            linked_course["semester"]
+                            if linked_course
+                            else "—"
+                        ),
+                        "Date": exam["exam_date"],
+                        "Type": exam.get("exam_type") or "Final",
+                        "Start Time": format_time_display(exam.get("start_time")),
+                        "End Time": format_time_display(exam.get("end_time")),
+                        "Location": exam.get("location") or "—",
+                    }
+                )
+
+            st.dataframe(
+                display_exams,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # ---------- SELECT EXAM ----------
+            exam_options = {
+                (
+                    f"{exam['exam_title']} - "
+                    f"{exam['exam_date']}"
+                ): exam
+                for exam in exams
+            }
+
+            selected_exam_label = st.selectbox(
+                "Select an exam to manage",
+                list(exam_options.keys()),
+                key="manage_exam_selection",
+            )
+
+            selected_exam = exam_options[selected_exam_label]
+
+            # ---------- EDIT EXAM ----------
+            with st.expander("Edit Selected Exam"):
+                with st.form("edit_exam_form"):
+                    edit_exam_title = st.text_input(
+                        "Exam Title",
+                        value=selected_exam["exam_title"],
+                    )
+
+                    current_course_label = next(
+                        (
+                            label
+                            for label, course in course_options.items()
+                            if course["id"] == selected_exam.get(
+                                "course_id"
+                            )
+                        ),
+                        list(course_options.keys())[0],
+                    )
+
+                    course_labels = list(course_options.keys())
+
+                    edit_course_label = st.selectbox(
+                        "Course",
+                        course_labels,
+                        index=course_labels.index(
+                            current_course_label
+                        ),
+                        key="edit_exam_course",
+                    )
+
+                    edit_exam_date = st.date_input(
+                        "Exam Date",
+                        value=date.fromisoformat(
+                            selected_exam["exam_date"]
+                        ),
+                        key="edit_exam_date",
+                    )
+
+                    exam_types = [
+                        "Mid-Semester",
+                        "End-Semester",
+                        "Internal",
+                        "Practical",
+                        "Other",
+                    ]
+
+                    current_type = (
+                        selected_exam.get("exam_type") or "Final"
+                    )
+
+                    if current_type not in exam_types:
+                        exam_types.append(current_type)
+
+                    edit_exam_type = st.selectbox(
+                        "Exam Type",
+                        exam_types,
+                        index=exam_types.index(current_type),
+                        key="edit_exam_type",
+                    )
+
+                    edit_exam_location = st.text_input(
+                        "Exam Location",
+                        value=selected_exam.get("location") or "",
+                    )
+
+                    edit_exam_notes = st.text_area(
+                        "Additional Notes",
+                        value=selected_exam.get("notes") or "",
+                    )
+
+                    update_exam_submitted = st.form_submit_button(
+                        "Update Exam"
+                    )
+
+                if update_exam_submitted:
+                    updated_course = course_options[
+                        edit_course_label
+                    ]
+
+                    update_user_exam(
+                        user_id=user_id,
+                        exam_id=selected_exam["id"],
+                        course_id=updated_course["id"],
+                        exam_title=edit_exam_title,
+                        exam_date=edit_exam_date,
+                        start_time=(
+                            time.fromisoformat(
+                                selected_exam["start_time"]
+                            )
+                            if selected_exam.get("start_time")
+                            else None
+                        ),
+                        end_time=(
+                            time.fromisoformat(
+                                selected_exam["end_time"]
+                            )
+                            if selected_exam.get("end_time")
+                            else None
+                        ),
+                        exam_type=edit_exam_type,
+                        location=edit_exam_location,
+                        notes=edit_exam_notes,
+                    )
+
+                    st.success("Exam updated successfully!")
+                    st.rerun()
+
+            # ---------- DELETE EXAM ----------
+            if st.button(
+                "Delete Selected Exam",
+                key="delete_exam_button",
+            ):
+                delete_user_exam(
+                    user_id,
+                    selected_exam["id"],
+                )
+
+                st.success("Exam deleted successfully!")
+                st.rerun()
+
+        else:
+            st.info(
+                "No exams scheduled yet. Add your first exam above."
+            )
+
+except Exception as e:
+    st.error(f"Could not load or manage exams: {e}")
+
+ # ---------- EXAM STUDY PLANNER ----------
+
+st.divider()
+st.header("Exam Study Planner")
+
+try:
+    planner_exams = get_user_exams(user_id)
+    planner_sessions = get_user_study_sessions(user_id)
+
+    if not planner_exams:
+        st.info("Add an exam in Manage Exams before creating a study plan.")
+
+    else:
+        exam_options = {
+            f"{exam['exam_title']} - {exam['exam_date']}": exam
+            for exam in planner_exams
+        }
+
+        selected_exam_label = st.selectbox(
+            "Select an exam",
+            list(exam_options.keys()),
+            key="study_planner_exam",
+        )
+
+        selected_planner_exam = exam_options[selected_exam_label]
+
+        st.caption(
+            f"Exam date: {selected_planner_exam['exam_date']}"
+        )
+
+        allocation_method = st.radio(
+            "How would you like to calculate preparation hours?",
+            [
+                "Set preparation hours manually",
+                "Calculate automatically",
+            ],
+            key="study_allocation_method",
+        )
+
+        target_hours = None
+        difficulty = 3
+        preparedness = 3
+
+        if allocation_method == "Set preparation hours manually":
+            target_hours = st.number_input(
+                "Total preparation hours",
+                min_value=1.0,
+                max_value=200.0,
+                value=8.0,
+                step=1.0,
+                key="manual_preparation_hours",
+            )
+
+        else:
+            difficulty = st.slider(
+                "Exam difficulty",
+                min_value=1,
+                max_value=5,
+                value=3,
+                help="1 = Easy, 5 = Very difficult",
+                key="exam_difficulty",
+            )
+
+            preparedness = st.slider(
+                "Current preparation level",
+                min_value=1,
+                max_value=5,
+                value=3,
+                help="1 = Not prepared, 5 = Well prepared",
+                key="exam_preparedness",
+            )
+
+            recommended_hours = calculate_recommended_hours(
+                difficulty,
+                preparedness,
+            )
+
+            st.info(
+                f"Recommended preparation time: "
+                f"{recommended_hours} hours"
+            )
+
+        if st.button(
+            "Generate Study Plan",
+            key="generate_exam_study_plan",
+        ):
+            timetable_classes = st.session_state.get("classes", [])
+
+            if not timetable_classes:
+                st.warning(
+                    "Please add or import your timetable first."
+                )
+
+            else:
+                exam_date_value = selected_planner_exam["exam_date"]
+
+                if isinstance(exam_date_value, str):
+                    exam_date_value = date.fromisoformat(
+                        exam_date_value
+                    )
+
+                result = generate_exam_study_plan(
+                    classes=timetable_classes,
+                    exam_date=exam_date_value,
+                    exam_id=selected_planner_exam["id"],
+                    course_id=selected_planner_exam.get("course_id"),
+                    target_hours=target_hours,
+                    difficulty=difficulty,
+                    preparedness=preparedness,
+                )
+
+                if not result["sessions"]:
+                    st.warning(
+                        "No suitable study slots were found before "
+                        "this exam. Check your timetable and exam date."
+                    )
+
+                else:
+                    # Replace the previous plan for this exam.
+                    delete_exam_study_sessions(
+                        user_id,
+                        selected_planner_exam["id"],
+                    )
+
+                    for session in result["sessions"]:
+                        add_user_study_session(
+                            user_id=user_id,
+                            exam_id=session["exam_id"],
+                            course_id=session["course_id"],
+                            session_date=session["session_date"],
+                            start_time=session["start_time"],
+                            end_time=session["end_time"],
+                            duration_minutes=session["duration_minutes"],
+                        )
+
+                    st.success("Study plan generated and saved!")
+
+                    if result["unallocated_minutes"] > 0:
+                        st.warning(
+                            f"{result['unallocated_minutes'] // 60} "
+                            f"hours and "
+                            f"{result['unallocated_minutes'] % 60} "
+                            f"minutes could not be allocated."
+                        )
+
+                    st.rerun()
+
+    # ---------- VIEW SAVED STUDY SESSIONS ----------
+
+    st.subheader("Your Study Sessions")
+
+    planner_sessions = get_user_study_sessions(user_id)
+
+    if planner_sessions:
+
+        course_lookup = {
+            course["id"]: course["course_name"]
+            for course in get_user_courses(user_id)
+        }
+
+        exam_lookup = {
+            exam["id"]: exam["exam_title"]
+            for exam in get_user_exams(user_id)
+        }
+
+        # Prepare readable session information.
+        display_sessions = []
+
+        for session in planner_sessions:
+
+            display_sessions.append({
+                "Exam": exam_lookup.get(
+                    session["exam_id"],
+                    "Exam unavailable"
+                ),
+                "Course": course_lookup.get(
+                    session.get("course_id"),
+                    "Course unavailable"
+                ),
+                "Date": session["session_date"],
+                "Start Time": format_study_time(
+                    session["start_time"]
+                ),
+                "End Time": format_study_time(
+                    session["end_time"]
+                ),
+                "Duration": (
+                    f"{session['duration_minutes']} minutes"
+                ),
+                "Status": session.get("status", "Planned"),
+            })
+
+        # Display the study schedule.
+        st.dataframe(
+            display_sessions,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # Prepare session selection options.
+        session_options = {
+            (
+                f"{session['session_date']} | "
+                f"{format_study_time(session['start_time'])} - "
+                f"{format_study_time(session['end_time'])} | "
+                f"{exam_lookup.get(session['exam_id'], 'Exam')}"
+            ): session
+            for session in planner_sessions
+        }
+
+        selected_session_label = st.selectbox(
+            "Select a study session to manage",
+            list(session_options.keys()),
+            key="manage_study_session",
+        )
+
+        selected_session = session_options[
+            selected_session_label
+        ]
+
+        # Update session status.
+        status_options = [
+            "Planned",
+            "Completed",
+            "Skipped",
+        ]
+
+        current_status = selected_session.get(
+            "status",
+            "Planned"
+        )
+
+        if current_status not in status_options:
+            status_options.append(current_status)
+
+        new_status = st.selectbox(
+            "Update session status",
+            status_options,
+            index=status_options.index(current_status),
+            key="study_session_status",
+        )
+
+        if st.button(
+            "Update Session Status",
+            key="update_study_session_status",
+        ):
+
+            update_study_session_status(
+                user_id,
+                selected_session["id"],
+                new_status,
+            )
+
+            st.success("Study session status updated.")
+            st.rerun()
+
+        # Delete selected session.
+        if st.button(
+            "Delete Selected Session",
+            key="delete_study_session",
+        ):
+
+            delete_user_study_session(
+                user_id,
+                selected_session["id"],
+            )
+
+            st.success("Study session deleted.")
+            st.rerun()
+
+    else:
+
+        st.info("No study sessions generated yet.")
+
+except Exception as e:
+    st.error(f"Could not load the Exam Study Planner: {e}")
+
+# ---------- END EXAM STUDY PLANNER ----------       
+    
 st.header("Add Your Timetable")
 
 option = st.selectbox(
@@ -140,6 +948,255 @@ option = st.selectbox(
         "Import from Google Calendar",
     ],
 )
+
+# ---------------- INDIAN NATIONAL HOLIDAY CALENDAR ----------------
+
+st.divider()
+st.header("Academic Calendar and Holidays")
+
+
+calendar_view = st.radio(
+    "Choose calendar view",
+    ["Upcoming Holidays", "All Holidays"],
+    horizontal=True,
+    key="national_holiday_view",
+)
+
+all_holidays = get_indian_national_holidays(2026)
+
+if calendar_view == "Upcoming Holidays":
+    holiday_events = get_upcoming_holidays(
+        2026,
+        today=date.today(),
+    )
+else:
+    holiday_events = all_holidays
+
+if holiday_events:
+    display_holidays = []
+
+    for holiday in holiday_events:
+        display_holidays.append({
+            "Holiday": holiday["Event"],
+            "Date": holiday["Date"].strftime("%d %B %Y"),
+            "Day": holiday["Day"],
+            "Category": holiday["Category"],
+        })
+
+    st.dataframe(
+        display_holidays,
+        width="stretch",
+        hide_index=True,
+    )
+
+    
+else:
+    st.info("No upcoming holidays remaining in the 2026 calendar.")
+
+academic_calendar_user_id = st.session_state.get("supabase_user_id")
+
+# Add a new academic event
+with st.expander("➕ Add Academic Event", expanded=False):
+
+    with st.form("add_academic_event_form"):
+
+        event_title = st.text_input(
+            "Event Title",
+            placeholder="e.g. Physics Internal Examination",
+        )
+
+        event_date = st.date_input(
+            "Event Date",
+            value=date.today(),
+        )
+
+        event_type = st.selectbox(
+            "Event Type",
+            [
+                "Semester Start",
+                "Semester End",
+                "Internal Examination",
+                "Practical Examination",
+                "Assignment",
+                "Project",
+                "College Event",
+                "Semester Break",
+                "Other",
+            ],
+        )
+
+        event_description = st.text_area(
+            "Description",
+            placeholder="Add any additional details...",
+        )
+
+        add_event_button = st.form_submit_button(
+            "Save Academic Event",
+            use_container_width=True,
+        )
+
+        if add_event_button:
+
+            if not event_title.strip():
+                st.error("Please enter an event title.")
+
+            else:
+                try:
+                    add_user_academic_event(
+                        academic_calendar_user_id,
+                        event_title,
+                        event_date,
+                        event_type,
+                        event_description,
+                    )
+
+                    st.success("Academic event added successfully!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Could not add event: {e}")
+
+
+# Display saved academic events
+try:
+    academic_events = get_user_academic_events(
+        academic_calendar_user_id
+    )
+
+    if academic_events:
+
+        st.markdown("*Your Academic Events*")
+
+        display_academic_events = []
+
+        for event in academic_events:
+            display_academic_events.append({
+                "Event": event["event_title"],
+                "Date": date.fromisoformat(
+                    str(event["event_date"])[:10]
+                ).strftime("%d %B %Y"),
+                "Type": event["event_type"],
+                "Description": event.get("description", ""),
+            })
+
+        st.dataframe(
+            display_academic_events,
+            width="stretch",
+            hide_index=True,
+        )
+
+        # Select an event to edit or delete
+        event_options = {
+            (
+                f"{event['id']} | {event['event_title']} | "
+                f"{str(event['event_date'])[:10]}"
+            ): event
+            for event in academic_events
+        }
+
+        selected_event_label = st.selectbox(
+            "Select an event to manage",
+            list(event_options.keys()),
+            key="manage_academic_event",
+        )
+
+        selected_event = event_options[selected_event_label]
+
+        st.markdown("*Edit Selected Event*")
+
+        with st.form("edit_academic_event_form"):
+
+            edit_title = st.text_input(
+                "Event Title",
+                value=selected_event["event_title"],
+            )
+
+            edit_date = st.date_input(
+                "Event Date",
+                value=date.fromisoformat(
+                    str(selected_event["event_date"])[:10]
+                ),
+            )
+
+            event_type_options = [
+                "Semester Start",
+                "Semester End",
+                "Internal Examination",
+                "Practical Examination",
+                "Assignment",
+                "Project",
+                "College Event",
+                "Semester Break",
+                "Other",
+            ]
+
+            current_event_type = selected_event["event_type"]
+
+            if current_event_type not in event_type_options:
+                event_type_options.append(current_event_type)
+
+            edit_type = st.selectbox(
+                "Event Type",
+                event_type_options,
+                index=event_type_options.index(current_event_type),
+            )
+
+            edit_description = st.text_area(
+                "Description",
+                value=selected_event.get("description", ""),
+            )
+
+            update_event_button = st.form_submit_button(
+                "Update Event",
+                use_container_width=True,
+            )
+
+            if update_event_button:
+
+                if not edit_title.strip():
+                    st.error("Event title cannot be empty.")
+
+                else:
+                    try:
+                        update_user_academic_event(
+                            academic_calendar_user_id,
+                            selected_event["id"],
+                            edit_title,
+                            edit_date,
+                            edit_type,
+                            edit_description,
+                        )
+
+                        st.success("Academic event updated successfully!")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Could not update event: {e}")
+
+        # Delete selected event
+        if st.button(
+            "🗑️ Delete Selected Event",
+            key="delete_academic_event_button",
+            type="secondary",
+        ):
+
+            try:
+                delete_user_academic_event(
+                    academic_calendar_user_id,
+                    selected_event["id"],
+                )
+
+                st.success("Academic event deleted successfully!")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Could not delete event: {e}")
+
+    else:
+        st.info("No personal academic events added yet.")
+
+except Exception as e:
+    st.error(f"Could not load academic events: {e}")    
 
 # ---------- ADD CLASSES MANUALLY ----------
 if option == "Enter manually":
@@ -396,8 +1453,20 @@ if st.session_state.classes:
         ]
 
         if day_classes:
+            display_day_classes = []
+
+            for item in day_classes:
+                formatted_item = item.copy()
+                formatted_item["Start Time"] = format_time_display(
+                    item.get("Start Time")
+                )
+                formatted_item["End Time"] = format_time_display(
+                    item.get("End Time")
+                )
+                display_day_classes.append(formatted_item)
+
             st.dataframe(
-                day_classes,
+                display_day_classes,
                 use_container_width=True,
                 hide_index=True,
             )
@@ -417,13 +1486,14 @@ if st.session_state.classes:
             st.session_state.edit_mode = False
 
     class_options = [
-        (
-            f"{i + 1}. {item.get('subject', 'Untitled')} — "
-            f"{item.get('Day', '?')} "
-            f"({item.get('Start Time', '')}–{item.get('End Time', '')})"
-        )
-        for i, item in enumerate(st.session_state.classes)
-    ]
+    (
+        f"{i + 1}. {item.get('subject', 'Untitled')} - "
+        f"{item.get('Day', '?')} "
+        f"{format_time_display(item.get('Start Time'))} - "
+        f"{format_time_display(item.get('End Time'))}"
+    )
+    for i, item in enumerate(st.session_state.classes)
+]
 
     # ---------- EDIT CLASSES ----------
     if st.session_state.edit_mode:
@@ -996,20 +2066,66 @@ else:
     try:
         deadlines = get_user_deadlines(current_user_id)
         if deadlines:
-            st.subheader("🎯 Priority Deadlines")
+            st.subheader("🎯 Smart Assignment Priorities")
 
             ranked_deadlines = prioritize_deadlines(
                 deadlines,
                 today=date.today(),
             )
 
-            for task in ranked_deadlines:
-                st.write(
-                    f"*{task['title']}* — "
-                    f"{task['status']} | "
-                    f"Priority: {task['priority']} | "
-                    f"Preparation: {task['estimated_hours']} hour(s)"
+            if ranked_deadlines:
+                total_hours = sum(
+                    task["estimated_hours"]
+                    for task in ranked_deadlines
                 )
+
+                st.metric(
+                    "Total Pending Preparation Hours",
+                    f"{total_hours:.1f} hours",
+                )
+
+                top_task = ranked_deadlines[0]
+
+                st.success(
+                    f"Recommended to work on first: "
+                    f"{top_task['title']} "
+                    f"(Score: {top_task['priority_score_total']}/100)"
+                )
+
+                for index, task in enumerate(
+                    ranked_deadlines,
+                    start=1,
+                ):
+                    with st.container(border=True):
+                        st.write(
+                            f"*{index}. {task['title']}*"
+                        )
+
+                        st.write(
+                            f"Recommendation: {task['recommendation']}"
+                        )
+
+                        st.write(
+                            f"Deadline: {task['status']}"
+                        )
+
+                        st.write(
+                            f"Selected priority: {task['priority']}"
+                        )
+
+                        st.write(
+                            f"Preparation: "
+                            f"{task['estimated_hours']} hours"
+                        )
+
+                        st.progress(
+                            task["priority_score_total"] / 100
+                        )
+
+                        st.caption(
+                            f"Priority score: "
+                            f"{task['priority_score_total']}/100"
+                        )
 
         if deadlines:
             today = date.today()
