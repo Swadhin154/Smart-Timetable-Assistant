@@ -51,6 +51,10 @@ from academic_calendar import (
     get_indian_national_holidays,
     get_upcoming_holidays,
 )
+from academic_report_generator import (
+    generate_academic_excel,
+    generate_academic_pdf,
+)
 def format_time_display(value):
     """Convert supported time values into 12-hour AM/PM format."""
 
@@ -512,6 +516,44 @@ try:
                 display_exams,
                 use_container_width=True,
                 hide_index=True,
+            )
+            exam_csv_buffer = io.StringIO()
+
+            exam_csv_writer = csv.DictWriter(
+                exam_csv_buffer,
+                fieldnames=[
+                    "Exam",
+                    "Course",
+                    "Semester",
+                    "Date",
+                    "Type",
+                    "Start Time",
+                    "End Time",
+                    "Location",
+                ],
+            )
+
+            exam_csv_writer.writeheader()
+
+            for exam_row in display_exams:
+                export_exam = exam_row.copy()
+
+                export_exam["Start Time"] = format_time_display(
+                    exam_row.get("Start Time")
+                )
+
+                export_exam["End Time"] = format_time_display(
+                    exam_row.get("End Time")
+                )
+
+                exam_csv_writer.writerow(export_exam)
+
+            st.download_button(
+                label="📥 Export Exam Schedule as CSV",
+                data=exam_csv_buffer.getvalue(),
+                file_name="exam_schedule.csv",
+                mime="text/csv",
+                key="export_exam_schedule",
             )
 
             # ---------- SELECT EXAM ----------
@@ -1084,6 +1126,29 @@ try:
             width="stretch",
             hide_index=True,
         )
+        # Export academic events to CSV
+        csv_output = io.StringIO()
+
+        csv_writer = csv.DictWriter(
+                csv_output,
+                fieldnames=[
+                    "Event",
+                    "Date",
+                    "Type",
+                    "Description",
+                ],
+            )
+
+        csv_writer.writeheader()
+        csv_writer.writerows(display_academic_events)
+
+        st.download_button(
+                label="Download Academic Events CSV",
+                data=csv_output.getvalue().encode("utf-8-sig"),
+                file_name="academic_events.csv",
+                mime="text/csv",
+                key="download_academic_events_csv",
+            )
 
         # Select an event to edit or delete
         event_options = {
@@ -1432,6 +1497,45 @@ if st.session_state.classes:
         for item in st.session_state.classes
         if item.get("semester", "Semester 1") == selected_semester
     ]
+    if selected_semester != "Select Semester" and semester_classes:
+
+            csv_buffer = io.StringIO()
+
+            csv_writer = csv.DictWriter(
+                csv_buffer,
+                fieldnames=[
+                    "subject",
+                    "Day",
+                    "Start Time",
+                    "End Time",
+                    "Teacher",
+                    "Room",
+                    "semester",
+                ],
+                extrasaction="ignore",
+            )
+
+            csv_writer.writeheader()
+            for class_item in semester_classes:
+                export_item = class_item.copy()
+
+                export_item["Start Time"] = format_time_display(
+                    class_item.get("Start Time")
+                )
+
+                export_item["End Time"] = format_time_display(
+                    class_item.get("End Time")
+                )
+
+                csv_writer.writerow(export_item)
+
+            st.download_button(
+                label="📥 Export Timetable as CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"{selected_semester.replace(' ', '_')}_timetable.csv",
+                mime="text/csv",
+                key="export_semester_timetable",
+            )
 
     if selected_semester != "Select Semester":
         st.dataframe(
@@ -2074,6 +2178,39 @@ else:
             )
 
             if ranked_deadlines:
+                csv_buffer = io.StringIO()
+
+                csv_fields = [
+                    "title",
+                    "due_date",
+                    "days_remaining",
+                    "status",
+                    "priority",
+                    "estimated_hours",
+                    "recommendation",
+                    "priority_score_total",
+                ]
+
+                csv_writer = csv.DictWriter(
+                    csv_buffer,
+                    fieldnames=csv_fields,
+                )
+
+                csv_writer.writeheader()
+
+                for task in ranked_deadlines:
+                    csv_writer.writerow({
+                        field: task.get(field, "")
+                        for field in csv_fields
+                    })
+
+                st.download_button(
+                    label="📥 Download Assignment Priorities (CSV)",
+                    data=csv_buffer.getvalue(),
+                    file_name="assignment_priorities.csv",
+                    mime="text/csv",
+                    key="download_assignment_priorities",
+                )
                 total_hours = sum(
                     task["estimated_hours"]
                     for task in ranked_deadlines
@@ -2182,3 +2319,57 @@ else:
 
     except Exception as exc:
         st.error(f"Could not load deadlines: {exc}")
+
+        # ---------- CONSOLIDATED ACADEMIC REPORT ----------
+
+st.divider()
+st.header("📊 Consolidated Academic Report")
+
+report_user_id = st.session_state.get("supabase_user_id")
+
+if not report_user_id:
+    st.warning("Please sign in to download your academic report.")
+
+else:
+    try:
+        report_data = {
+            "timetable": st.session_state.get("classes", []),
+            "courses": get_user_courses(report_user_id),
+            "exams": get_user_exams(report_user_id),
+            "study_sessions": get_user_study_sessions(report_user_id),
+            "deadlines": get_user_deadlines(report_user_id),
+            "academic_events": get_user_academic_events(report_user_id),
+        }
+
+        st.write(
+            "Download all your academic information in one organised report."
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            excel_file = generate_academic_excel(report_data)
+
+            st.download_button(
+                label="📊 Download Excel Report",
+                data=excel_file,
+                file_name="academic_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_consolidated_excel",
+                use_container_width=True,
+            )
+
+        with col2:
+            pdf_file = generate_academic_pdf(report_data)
+
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_file,
+                file_name="academic_report.pdf",
+                mime="application/pdf",
+                key="download_consolidated_pdf",
+                use_container_width=True,
+            )
+
+    except Exception as e:
+        st.error(f"Could not generate academic report: {e}")
