@@ -14,3 +14,18 @@ test_email.py
 
 # Jupyter temporary files
 .ipynb_checkpoints/
+# Python cache files
+_pycache_/
+*.py[cod]
+.pytest_cache/
+
+# Environment and private credentials
+.env
+.streamlit/secrets.toml
+credentials.json
+token.json
+
+# Local backup files
+app_before_dashboard_redesign.py
+
+__pycache__/
